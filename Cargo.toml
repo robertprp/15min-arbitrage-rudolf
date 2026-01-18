@@ -1,0 +1,76 @@
+[package]
+name = "rudolf"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [ ".", "lib", "service"]
+resolver = "3"
+
+[dependencies]
+lib = { path = "lib" }
+service = { path = "service" }
+clap = { workspace = true }
+async-trait = { workspace = true }
+tracing = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+chrono = { workspace = true }
+uuid = { workspace = true }
+tokio-stream = { workspace = true }
+rust_decimal = { workspace = true }
+tracing-opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+tracing-subscriber.workspace = true
+
+
+[workspace.dependencies]
+clap = { version = "4.5.4", features = ["derive"] }
+tokio = { version = "1.43.0", features = ["full", "rt"] }
+tracing = { version = "0.1.41", features = ["std"] }
+sqlx = { version = "0.8.3", features = ["postgres", "macros", "json", "uuid", "rust_decimal", "bigdecimal", "chrono", "runtime-tokio", "tls-native-tls", "migrate"] }
+anyhow = "1.0"
+buildstructor = { version = "0.6"}
+serde_json = "1.0.108"
+colorful = "0.3.2"
+redis = { version = "0.23.0", features = ["aio", "connection-manager", "tokio-comp"] }
+tokio-stream = { version = "0.1.11", features = ["sync"] }
+futures = "0.3.25"
+aws-config = "0.55.3"
+aws-sdk-s3 = "0.28.0"
+aws-credential-types = "0.55.3"
+reqwest = { version = "0.11.11", features = ["blocking", "json"] }
+uuid = { version = "1.3.3", features = ["v4", "serde"] }
+slug = "0.1.4"
+rand = { version = "0.8.5", features = ["small_rng"] }
+tungstenite = { version = "0.20.0", features = ["native-tls"] }
+url = "2.4.0"
+serde_with = { version = "3.1.0", features = ["chrono_0_4"] }
+hex = "0.4.3"
+redis-macros = "0.2.1"
+async-trait = "0.1.74"
+futures-util = "0.3.28"
+async-tungstenite = { version = "0.23.0", features = ["async-native-tls", "async-std"] }
+reqwest-retry = "0.3.0"
+reqwest-middleware = "0.2.4"
+opentelemetry = { version = "0.27.0", features = ["logs", "metrics", "tracing", "trace"] }
+opentelemetry-otlp = { version = "0.27.0", features = ["tonic", "trace", "tracing", "tokio", "grpc-tonic", "metrics", "logs", "http-proto", "reqwest-client"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter", "registry", "std", "fmt"] }
+opentelemetry_sdk = { version = "0.27.0", features = ["tokio", "rt-tokio", "rt-tokio-current-thread", "metrics", "logs", "testing", "trace", "tracing"] }
+tracing-opentelemetry = { version = "0.28.0", features = ["tracing-log"] }
+opentelemetry-appender-tracing = { version = "0.27.0", features = ["log", "experimental_metadata_attributes", "spec_unstable_logs_enabled"] }
+opentelemetry-stdout = { version = "0.27.0", features = ["logs", "metrics", "trace"] }
+rust_decimal = { version = "1.36.0", features = ["serde", "db-postgres"] }
+thiserror = "2.0.1"
+serde = { version = "1.0.0", features = ["derive"] }
+chrono = "0.4.24"
+serde_yaml = "0.9.30"
+serde_qs = "0.15"
+regex = "1.11.1"
+alloy       = { version = "1.0", features = ["full"] }
+# alloy-sol-types = { version = "1.0", features = ["full"] }
+hmac = "0.12.1"
+sha2 = "0.10.8"
+base64 = "0.21.7"
+kalshi = { version = "0.9"}
+teloxide = { version = "0.15.0", features = ["macros"] }
+graphql_client = { version= "0.14.0", features = ["reqwest"]}
