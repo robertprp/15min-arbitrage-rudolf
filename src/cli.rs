@@ -1,13 +1,11 @@
 use std::{ops::Div, path::Path, str::FromStr};
 
 use clap::{Parser, Subcommand};
-use error_stack::report;
-use lib::{AppResult, Error};
+use lib::AppResult;
 use rust_decimal::{Decimal, MathematicalOps};
+use service::{config::service::ConfigService, kalshi::service::KalshiService, market::Min15Symbols, polymarket::gamma::PolymarketGammaService, services::ServiceProvider};
 use tokio::join;
 use tracing::{info, warn};
-
-pub const USDT_DECIMALS: u32 = 6;
 
 #[derive(Parser)]
 #[command(name = "rudolf")]
@@ -23,7 +21,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Start the arbitrage
-    Arbitrage,
+    Unified,
 }
 
 impl Cli {
@@ -32,22 +30,24 @@ impl Cli {
     }
 
     pub async fn execute(self) -> AppResult<()> {
-        let config = self.config;
-
-        let path = Path::new(&config);
-        let config = ConfigService::read_file(path)?;
+        let config = ConfigService::from_env()?;
 
         let services = ServiceProvider::new();
         services.add_service(config).await;
 
+        let polymarket_gamma_service = services.get_service_unchecked::<PolymarketGammaService>().await;
+        let kalshi_service = services.get_service_unchecked::<KalshiService>().await;
         match self.command {
-            Commands::Check {
-                polymarket_id,
-                azuro_game_id,
-            } => {
-                tracing::info!("Starting manual arbitrage");
-                tracing::info!("Polymarket NO ID: {}", polymarket_id);
-                tracing::info!("Azuro YES ID: {}", azuro_game_id);
+            Commands::Unified => {
+                let symbol = Min15Symbols::BTC;
+                let poly_market = polymarket_gamma_service.get_current_15min_market_by_symbol(symbol.clone()).await?;
+                info!("Polymarket market: {:?}", poly_market);
+                
+                let kalshi_market = kalshi_service.get_current_15min_market_by_symbol(symbol).await?;
+                
+                info!("Kalshi market: {:?}", kalshi_market);
+                
+                Ok(())
             }
         }
         

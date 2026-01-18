@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use lib::AppResult;
-use polymarket_client_sdk::gamma::{types::{request::{EventByIdRequest, EventByIdRequestBuilder, EventsRequest, MarketByIdRequest}, response::Market}, Client};
+use polymarket_client_sdk::gamma::{types::{request::{EventByIdRequest, EventByIdRequestBuilder, EventsRequest, MarketByIdRequest, MarketBySlugRequest}, response::Market}, Client};
 
 use crate::{market::Min15Symbols, services::{ServiceFactory, ServiceProvider}};
 
@@ -26,9 +26,9 @@ impl PolymarketGammaService {
         let now = chrono::Utc::now();
         let current_ts = now.timestamp();
         let floored_ts = Self::get_floored_15min_timestamp(current_ts);
-        let market_id = format!("{}-updown-15min-{}", symbol.to_string().to_lowercase(), floored_ts);
+        let market_slug = format!("{}-updown-15m-{}", symbol.to_string().to_lowercase(), floored_ts);
         
-        let market = self.client.market_by_id(&MarketByIdRequest::builder().id(market_id).build()).await?;
+        let market = self.client.market_by_slug(&MarketBySlugRequest::builder().slug(market_slug).build()).await?;
         
         Ok(market)
     }
