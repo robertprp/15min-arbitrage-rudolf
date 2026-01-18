@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+dotenvy = "0.15.7"
 buildstructor = { workspace = true }
 alloy = { workspace = true }
 lib = { path = "../lib" }
@@ -20,6 +21,7 @@ reqwest = { workspace = true }
 uuid = { workspace = true }
 slug = { workspace = true }
 rand = { workspace = true }
+anyhow = { workspace = true }
 tungstenite = { workspace = true }
 url = { workspace = true }
 serde_with = { workspace = true }
@@ -47,5 +49,7 @@ base64 =  { workspace = true }
 serde_qs = { workspace = true }
 teloxide = { workspace = true }
 graphql_client = { workspace = true }
-kalshi = { workspace = true }
+kalshi-rs = { workspace = true }
 regex = { workspace = true }
+polymarket-client-sdk = { workspace = true }
+chrono-tz = "0.8"

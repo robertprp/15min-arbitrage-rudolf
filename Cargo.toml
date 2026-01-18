@@ -24,6 +24,7 @@ tracing-subscriber.workspace = true
 
 
 [workspace.dependencies]
+polymarket-client-sdk = { version = "0.4.1", features = ["gamma", "clob", "ws"] }
 clap = { version = "4.5.4", features = ["derive"] }
 tokio = { version = "1.43.0", features = ["full", "rt"] }
 tracing = { version = "0.1.41", features = ["std"] }
@@ -71,6 +72,6 @@ alloy       = { version = "1.0", features = ["full"] }
 hmac = "0.12.1"
 sha2 = "0.10.8"
 base64 = "0.21.7"
-kalshi = { version = "0.9"}
+kalshi-rs = { version = "0.2.1"}
 teloxide = { version = "0.15.0", features = ["macros"] }
 graphql_client = { version= "0.14.0", features = ["reqwest"]}
