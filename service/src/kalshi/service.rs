@@ -5,7 +5,8 @@ use async_trait::async_trait;
 use chrono::{Timelike, Utc};
 use kalshi_rs::{events::models::GetEventResponse, Account, KalshiClient};
 use lib::AppResult;
-use chrono_tz::America::New_York; // Import the specific timezone
+use chrono_tz::America::New_York;
+use tracing::info; // Import the specific timezone
 
 use crate::{config::service::ConfigService, market::Min15Symbols, services::{ServiceFactory, ServiceProvider}};
 
@@ -31,18 +32,23 @@ impl KalshiService {
         let now_ny = now_utc.with_timezone(&New_York);
         
         let current_minute = now_ny.minute();
-        let rounded_minute = current_minute - (current_minute % 15);
+        let minutes_to_add = 15 - (current_minute % 15);
         
+        // 2. Add the duration. This handles hour/day rollovers automatically.
         let target_time = now_ny
-            .with_minute(rounded_minute).unwrap()
-            .with_second(0).unwrap();
-
-        let date_part = target_time.format("%y").to_string(); // "26"
-        let day_time_part = target_time.format("%d%H%M").to_string(); // "181500"
+            .with_second(0).unwrap()
+            .with_nanosecond(0).unwrap()
+            .checked_add_signed(chrono::Duration::minutes(minutes_to_add as i64))
+            .ok_or_else(|| anyhow::anyhow!("Time calculation overflow"))?;
+        
+        let date_part = target_time.format("%y").to_string(); 
+        let day_time_part = target_time.format("%d%H%M").to_string();
         
         let month_part = target_time.format("%b").to_string().to_uppercase();
         let timestamp_str = format!("{}{}{}", date_part, month_part, day_time_part);
-        let ticker = format!("KM{}15MIN-{}", asset, timestamp_str);
+        let ticker = format!("KX{}15M-{}", asset, timestamp_str);
+        
+        info!("Kalshi ticker: {}", ticker);
         
         self.client.get_event(&ticker).await.context("Failed to get event")
     }

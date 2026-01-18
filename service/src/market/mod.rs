@@ -1,22 +1,25 @@
 use std::str::FromStr;
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use kalshi_rs::events::models::GetEventResponse;
 use lib::AppResult;
 use polymarket_client_sdk::gamma::types::response::Market;
-use rust_decimal::Decimal;
+use rust_decimal::{prelude::FromPrimitive, Decimal};
 
+#[derive(Debug, Clone)]
 pub struct UnifiedMarket {
     pub ticker: Min15Symbols,
     pub exchange: Exchange,
     pub strike_price: Decimal,
 }
 
+#[derive(Debug, Clone)]
 pub enum Exchange {
     Kalshi,
     Polymarket
 }
 
+#[derive(Debug, Clone)]
 pub enum Min15Symbols {
     BTC,
     ETH,
@@ -35,20 +38,35 @@ impl ToString for Min15Symbols {
     }
 }
 
-impl TryFrom<Market> for UnifiedMarket {
+// Market and strike price
+impl TryFrom<(Market, f64)> for UnifiedMarket {
     type Error = anyhow::Error;
     
-    fn try_from(market: Market) -> Self {
-        UnifiedMarket {
-            ticker: match market.symbol.as_str() {
-                "BTC" => Min15Symbols::BTC,
-                "ETH" => Min15Symbols::ETH,
-                "SOL" => Min15Symbols::SOL,
-                _ => panic!("Unsupported symbol"),
-            },
-            exchange: Exchange::Polymarket,
-            strike_price: market.strike_price,
-        }
+    fn try_from((market, strike_price): (Market, f64)) -> AppResult<UnifiedMarket> {
+        // 1. Extract Symbol from the slug (e.g., "btc-up-or-down...")
+        // We look at the first part of the slug string.
+        let slug = market.slug
+            .as_ref()
+            .context("Market slug is missing")?;
+        
+        let ticker = if slug.starts_with("btc") {
+            Min15Symbols::BTC
+        } else if slug.starts_with("eth") {
+            Min15Symbols::ETH
+        } else if slug.starts_with("sol") {
+            Min15Symbols::SOL
+        } else {
+            bail!("Unsupported ticker in slug: {}", slug);
+        };
+        
+        let exchange = Exchange::Polymarket;
+        let strike_price = Decimal::from_f64(strike_price).context("Failed to convert strike price to Decimal")?;
+        
+        Ok(UnifiedMarket {
+            ticker,
+            exchange,
+            strike_price,
+        })
     }
 }
 
