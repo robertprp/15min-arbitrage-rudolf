@@ -4,6 +4,8 @@ use std::{
     collections::HashMap,
     sync::Arc,
 };
+
+use anyhow::Result;
 use tokio::sync::RwLock;
 use tracing::debug;
 
@@ -135,7 +137,7 @@ impl ServiceProvider {
 
 #[async_trait]
 pub trait ServiceFactory {
-    async fn factory(services: ServiceProvider) -> AppResult<Self>
+    async fn factory(services: ServiceProvider) -> Result<Self>
     where
         Self: Sized;
 }
