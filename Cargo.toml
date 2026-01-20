@@ -24,7 +24,9 @@ tracing-subscriber.workspace = true
 
 
 [workspace.dependencies]
-polymarket-client-sdk = { version = "0.4.1", features = ["gamma", "clob", "ws"] }
+chainlink-data-streams-report = "1.2.1"
+chainlink-data-streams-sdk = { version = "1.2.1", features = ["full"] }
+polymarket-client-sdk = { version = "0.4.1", features = ["gamma", "clob", "ws", "rtds"] }
 clap = { version = "4.5.4", features = ["derive"] }
 tokio = { version = "1.43.0", features = ["full", "rt"] }
 tracing = { version = "0.1.41", features = ["std"] }

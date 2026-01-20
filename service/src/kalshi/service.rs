@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{Timelike, Utc};
-use kalshi_rs::{events::models::GetEventResponse, Account, KalshiClient};
+use kalshi_rs::{events::models::GetEventResponse, Account, KalshiClient, KalshiWebsocketClient};
 use lib::AppResult;
 use chrono_tz::America::New_York;
 use tracing::info; // Import the specific timezone
@@ -11,19 +11,26 @@ use tracing::info; // Import the specific timezone
 use crate::{config::service::ConfigService, market::Min15Symbols, services::{ServiceFactory, ServiceProvider}};
 
 pub struct KalshiService {
-    client: KalshiClient
+    client: KalshiClient,
+    ws_client: KalshiWebsocketClient
 }
 
 impl KalshiService {
-    pub fn new(config: Arc<ConfigService>) -> Self {
+    pub async fn new(config: Arc<ConfigService>) -> AppResult<Self> {
         let api_key_id = config.kalshi.api_key_id.clone();
         let pk_pem = config.kalshi.private_key_pem.clone();
         
-        let account = Account::new(pk_pem, api_key_id);
+        let account = Account::new(pk_pem.clone(), api_key_id.clone());
         
         let client = KalshiClient::new(account);
         
-        Self { client }
+        let account = Account::new(pk_pem, api_key_id);
+        
+        let ws_client = KalshiWebsocketClient::new(account);
+        
+        ws_client.connect().await.context("Failed to connect to Kalshi WebSocket")?;
+        
+        Ok(Self { client, ws_client })
     }
     
     pub async fn get_current_15min_market_by_symbol(&self, symbol: Min15Symbols) -> AppResult<GetEventResponse> {
@@ -52,6 +59,18 @@ impl KalshiService {
         
         self.client.get_event(&ticker).await.context("Failed to get event")
     }
+    
+    async fn subscribe_orderbook(&self, ticker: String) -> AppResult<()> {
+        let key = vec!["orderbook_delta"];
+        let value = vec![ticker.as_str()];
+        self.ws_client.subscribe(key, value).await.context("Failed to subscribe to Kalshi WebSocket")
+    }
+    
+    async fn subscribe_fills(&self) -> AppResult<()> {
+        let key = vec!["fill"];
+        let value = vec![];
+        self.ws_client.subscribe(key, value).await.context("Failed to subscribe to Kalshi WebSocket")
+    }
 }
 
 #[async_trait]
@@ -59,6 +78,6 @@ impl ServiceFactory for KalshiService {
     async fn factory(services: ServiceProvider) -> AppResult<Self> {
         let config_service = services.get_service_unchecked::<ConfigService>().await;
         
-        Ok(Self::new(config_service))
+        Ok(Self::new(config_service).await?)
     }
 }
