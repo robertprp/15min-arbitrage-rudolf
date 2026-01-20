@@ -7,6 +7,9 @@ use service::{config::service::ConfigService, kalshi::service::KalshiService, ma
 use tokio::join;
 use tracing::{info, warn};
 
+use crate::monitor::run_monitor;
+
+
 #[derive(Parser)]
 #[command(name = "rudolf")]
 #[command(about = "Rudolf bot")]
@@ -22,6 +25,11 @@ pub struct Cli {
 pub enum Commands {
     /// Start the arbitrage
     Unified,
+    /// Monitor 15min BTC markets on both exchanges
+    Monitor {
+        #[arg(short, long)]
+        edge: f64,
+    }
 }
 
 impl Cli {
@@ -35,8 +43,13 @@ impl Cli {
         let services = ServiceProvider::new();
         services.add_service(config).await;
 
+        // Warm up services
         let polymarket_gamma_service = services.get_service_unchecked::<PolymarketGammaService>().await;
         let kalshi_service = services.get_service_unchecked::<KalshiService>().await;
+        
+        // Note: WebSocket service also needs to be initialized if not auto-created by provider
+        services.warm_up::<service::polymarket::ws::PolymarketWebSocketService>().await;
+
         match self.command {
             Commands::Unified => {
                 let symbol = Min15Symbols::BTC;
@@ -48,6 +61,10 @@ impl Cli {
                 info!("Kalshi market: {:?}", kalshi_market);
                 
                 Ok(())
+            }
+            // Execute the new command
+            Commands::Monitor { edge } => {
+                run_monitor(services, edge).await
             }
         }
         

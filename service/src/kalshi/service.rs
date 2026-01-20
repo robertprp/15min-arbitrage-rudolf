@@ -6,13 +6,15 @@ use chrono::{Timelike, Utc};
 use kalshi_rs::{events::models::GetEventResponse, Account, KalshiClient, KalshiWebsocketClient};
 use lib::AppResult;
 use chrono_tz::America::New_York;
-use tracing::info; // Import the specific timezone
+use tracing::info;
 
 use crate::{config::service::ConfigService, market::Min15Symbols, services::{ServiceFactory, ServiceProvider}};
 
 pub struct KalshiService {
     client: KalshiClient,
-    ws_client: KalshiWebsocketClient
+    // Make public so we can access the underlying stream if needed, 
+    // or keep private and expose a wrapper (preferred).
+    pub ws_client: KalshiWebsocketClient 
 }
 
 impl KalshiService {
@@ -41,7 +43,6 @@ impl KalshiService {
         let current_minute = now_ny.minute();
         let minutes_to_add = 15 - (current_minute % 15);
         
-        // 2. Add the duration. This handles hour/day rollovers automatically.
         let target_time = now_ny
             .with_second(0).unwrap()
             .with_nanosecond(0).unwrap()
@@ -60,13 +61,19 @@ impl KalshiService {
         self.client.get_event(&ticker).await.context("Failed to get event")
     }
     
-    async fn subscribe_orderbook(&self, ticker: String) -> AppResult<()> {
+    pub async fn subscribe_orderbook(&self, ticker: String) -> AppResult<()> {
         let key = vec!["orderbook_delta"];
         let value = vec![ticker.as_str()];
         self.ws_client.subscribe(key, value).await.context("Failed to subscribe to Kalshi WebSocket")
     }
     
-    async fn subscribe_fills(&self) -> AppResult<()> {
+    pub async fn subscribe_market_ticker(&self, ticker: String) -> AppResult<()> {
+        let key = vec!["ticker"];
+        let value = vec![ticker.as_str()];
+        self.ws_client.subscribe(key, value).await.context("Failed to subscribe to Kalshi WebSocket")
+    }
+    
+    pub async fn subscribe_fills(&self) -> AppResult<()> {
         let key = vec!["fill"];
         let value = vec![];
         self.ws_client.subscribe(key, value).await.context("Failed to subscribe to Kalshi WebSocket")

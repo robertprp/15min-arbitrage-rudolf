@@ -21,7 +21,10 @@ rust_decimal = { workspace = true }
 tracing-opentelemetry.workspace = true
 opentelemetry_sdk.workspace = true
 tracing-subscriber.workspace = true
-
+futures = { workspace = true }
+anyhow = { workspace = true }
+futures-util = { workspace = true }
+kalshi-rs = { workspace = true }
 
 [workspace.dependencies]
 chainlink-data-streams-report = "1.2.1"
@@ -38,6 +41,7 @@ colorful = "0.3.2"
 redis = { version = "0.23.0", features = ["aio", "connection-manager", "tokio-comp"] }
 tokio-stream = { version = "0.1.11", features = ["sync"] }
 futures = "0.3.25"
+futures-util = "0.3.31"
 aws-config = "0.55.3"
 aws-sdk-s3 = "0.28.0"
 aws-credential-types = "0.55.3"
@@ -51,7 +55,6 @@ serde_with = { version = "3.1.0", features = ["chrono_0_4"] }
 hex = "0.4.3"
 redis-macros = "0.2.1"
 async-trait = "0.1.74"
-futures-util = "0.3.28"
 async-tungstenite = { version = "0.23.0", features = ["async-native-tls", "async-std"] }
 reqwest-retry = "0.3.0"
 reqwest-middleware = "0.2.4"
