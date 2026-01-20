@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::{bail, Context};
 use async_trait::async_trait;
 use chrono::{Timelike, Utc};
-use kalshi_rs::{events::models::GetEventResponse, Account, KalshiClient, KalshiWebsocketClient};
+use kalshi_rs::{events::models::GetEventResponse, portfolio::models::CreateOrderRequest, Account, KalshiClient, KalshiWebsocketClient};
 use lib::AppResult;
 use chrono_tz::America::New_York;
 use tracing::info;
 
-use crate::{config::service::ConfigService, market::Min15Symbols, services::{ServiceFactory, ServiceProvider}};
+use crate::{config::service::ConfigService, market::Min15Symbols, services::{ServiceFactory, ServiceProvider}, strategy::Order};
 
 pub struct KalshiService {
     client: KalshiClient,
@@ -33,6 +33,51 @@ impl KalshiService {
         ws_client.connect().await.context("Failed to connect to Kalshi WebSocket")?;
         
         Ok(Self { client, ws_client })
+    }
+    
+    pub async fn place_fok_order(
+        &self,
+        ticker: String,
+        side: String, // yes or no
+        action: String, // buy or sell
+        order: Order
+    ) -> AppResult<()> {
+        let contracts = order.contracts;
+        let price_cents = order.price_cents;
+        let mut req = CreateOrderRequest {
+            ticker,
+            action,
+            side: side.clone(),
+            count: contracts.into(),
+            type_: Some(String::from("market")),
+            buy_max_cost: None,
+            cancel_order_on_pause: None,
+            client_order_id: None,
+            expiration_ts: None,
+            no_price: None,
+            no_price_dollars: None,
+            order_group_id: None,
+            post_only: None,
+            reduce_only: None,
+            self_trade_prevention_type: None,
+            // time_in_force: Some(String::from("fill_or_kill")),
+            time_in_force: None,
+            yes_price: None,
+            yes_price_dollars: None,
+        };
+        
+        if side.eq("yes") {
+            req.yes_price = Some(price_cents.into());
+        } else {
+            req.no_price = Some(price_cents.into());
+        }
+        
+        let response = self
+            .client
+            .create_order(&req)
+            .await?;
+        
+        Ok(())
     }
     
     pub async fn get_current_15min_market_by_symbol(&self, symbol: Min15Symbols) -> AppResult<GetEventResponse> {
