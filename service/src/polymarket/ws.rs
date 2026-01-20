@@ -3,30 +3,32 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use async_trait::async_trait;
-use futures::{Stream, StreamExt}; // Import StreamExt for map/select
+use futures::{Stream, StreamExt, TryStreamExt}; 
 use lib::AppResult;
 use polymarket_client_sdk::{
     auth::{state::Authenticated, Credentials, Normal},
-    clob::ws::{BookUpdate, Client, TradeMessage},
-    types::{Address, B256, U256}, // Import ID types
+    clob::ws::{BestBidAsk, Client, TradeMessage}, // Removed BookUpdate
+    types::{Address, B256, U256}, 
 };
 use uuid::Uuid;
+use rust_decimal::Decimal;
+use serde::Deserialize;
+use buildstructor::Builder;
+use serde_with::{serde_as, DisplayFromStr};
 
 use crate::{
     config::service::ConfigService,
     services::{ServiceFactory, ServiceProvider},
 };
 
-/// 1. Define the Unified Enum
-/// This allows the stream to yield a single type that wraps the specific updates.
+/// 2. Update the Unified Enum
 #[derive(Debug)]
 pub enum PolymarketFeedUpdate {
-    Orderbook(BookUpdate),
+    BestBidAsk(BestBidAsk), // Changed from Orderbook(BookUpdate)
     Trade(TradeMessage),
 }
 
 pub struct PolymarketWebSocketService {
-    // Note: Kept generic bounds specific as per your snippet
     pub client: Client<Authenticated<Normal>>,
 }
 
@@ -53,45 +55,25 @@ impl PolymarketWebSocketService {
         Ok(Self { client })
     }
 
-    /// 2. Implement the Combined Subscription
-    /// Accepts string arrays for ease of use, parses them, and merges the streams.
+    /// 3. Updated Combined Subscription
     pub fn subscribe_feed(
         &self,
-        asset_ids: Vec<String>, // For Orderbook
-        market_ids: Vec<String>, // For Trades
+        asset_ids: Vec<U256>, 
+        market_ids: Vec<B256>, 
     ) -> AppResult<impl Stream<Item = AppResult<PolymarketFeedUpdate>>> {
+        let bba_stream = self.client
+            .subscribe_best_bid_ask(asset_ids) // Adjusted to standard SDK method if `subscribe_market_with_options` is not available, or use specific method if SDK supports it.
+            .context("Failed to subscribe to market BestBidAsk")?
+            .map(|res| res.map(PolymarketFeedUpdate::BestBidAsk)).map_err(Into::into);
         
-        // --- A. Parse Inputs ---
-        let assets_u256: Vec<U256> = asset_ids
-            .into_iter()
-            .map(|s| U256::from_str(&s).context("Invalid Asset ID format"))
-            .collect::<Result<_, _>>()?;
-
-        let markets_b256: Vec<B256> = market_ids
-            .into_iter()
-            .map(|s| B256::from_str(&s).context("Invalid Market ID format"))
-            .collect::<Result<_, _>>()?;
-
-        // --- B. Create Individual Streams ---
-        
-        // Stream 1: Orderbook (Market Channel)
-        // We map the Result<BookUpdate> to Result<PolymarketFeedUpdate::Orderbook>
-        let book_stream = self.client
-            .subscribe_orderbook(assets_u256)
-            .context("Failed to subscribe to orderbook")?
-            .map(|res| res.map(PolymarketFeedUpdate::Orderbook).map_err(Into::into));
-
-        // Stream 2: Trades (User Channel)
-        // We map the Result<TradeMessage> to Result<PolymarketFeedUpdate::Trade>
+        // B. Subscribe to Trades (unchanged)
         let trade_stream = self.client
-            .subscribe_trades(markets_b256)
+            .subscribe_trades(market_ids)
             .context("Failed to subscribe to trades")?
             .map(|res| res.map(PolymarketFeedUpdate::Trade).map_err(Into::into));
 
-        // --- C. Merge Streams ---
-        // futures::stream::select combines two streams into one.
-        // The output stream will yield items whenever either source has data.
-        let combined_stream = futures::stream::select(book_stream, trade_stream);
+        // C. Merge Streams
+        let combined_stream = futures::stream::select(bba_stream, trade_stream);
 
         Ok(combined_stream)
     }

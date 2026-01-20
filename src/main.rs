@@ -2,6 +2,7 @@
 use lib::AppResult;
 use service::telemetry;
 mod cli;
+mod monitor;
 
 #[tokio::main]
 async fn main() -> AppResult<()> {

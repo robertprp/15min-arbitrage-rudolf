@@ -5027,9 +5027,13 @@ dependencies = [
 name = "rudolf"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "async-trait",
  "chrono",
  "clap",
+ "futures",
+ "futures-util",
+ "kalshi-rs",
  "lib",
  "opentelemetry_sdk",
  "rust_decimal",
