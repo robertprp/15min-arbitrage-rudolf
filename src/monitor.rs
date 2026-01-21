@@ -25,12 +25,6 @@ use service::{
 };
 use tracing::{error, info, warn};
 
-#[derive(Debug, PartialEq, Clone)]
-enum BotState {
-    Scanning,
-    Executing,
-}
-
 pub struct RunMonitorParams {
     pub services: ServiceProvider,
     pub min_entry_edge_cents: f64,
@@ -93,7 +87,6 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     let poly_fast_yes = PolyFastExecution::new(&pm_clob, config_service.clone(), asset_yes).await?;
     let poly_fast_no = PolyFastExecution::new(&pm_clob, config_service.clone(), asset_no).await?;
 
-    let mut state = BotState::Scanning;
     let mut last_action = std::time::Instant::now();
     let cooldown = Duration::from_secs(5);
 
@@ -111,61 +104,51 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
                     Ok(PolymarketFeedUpdate::Trade(trade)) => handler.handle_fill(FillEvent::Poly(trade)),
                     Err(e) => error!("Poly Stream Error: {:?}", e),
                 }
-            }
-
-            // --- Kalshi Stream ---
-            msg = kalshi.ws_client.next_message() => {
-                match msg {
-                    Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
-                        // This replaces the REST initialization
-                        market.apply_kalshi_ws_snapshot(snapshot.msg);
-                        kalshi_snapshot_received = true;
-                        info!("✅ Kalshi Snapshot received and applied");
-                    },
-                    Ok(KalshiSocketMessage::OrderbookDelta(orderbook_delta)) => {
-                        // Only apply deltas if we have seen the snapshot (though usually snapshot comes first)
-                        if kalshi_snapshot_received {
-                            market.apply_kalshi_delta(orderbook_delta);
-                        }
-                    },
-                    Ok(KalshiSocketMessage::UserFill(fill)) => handler.handle_fill(FillEvent::Kalshi(fill.msg)),
-                    Ok(value) => {
-                        info!("Kalshi WS Message: {:?}", value);
-                    }, 
-                    Err(e) => { error!("Kalshi WS Error: {:?}", e); break; }
                 }
-            }
+
+                // --- Kalshi Stream ---
+                msg = kalshi.ws_client.next_message() => {
+                    match msg {
+                        Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
+                            // This replaces the REST initialization
+                            market.apply_kalshi_ws_snapshot(snapshot.msg);
+                            kalshi_snapshot_received = true;
+                            info!("✅ Kalshi Snapshot received and applied");
+                        },
+                        Ok(KalshiSocketMessage::OrderbookDelta(orderbook_delta)) => {
+                            // Only apply deltas if we have seen the snapshot (though usually snapshot comes first)
+                            if kalshi_snapshot_received {
+                                market.apply_kalshi_delta(orderbook_delta);
+                            }
+                        },
+                        Ok(KalshiSocketMessage::UserFill(fill)) => handler.handle_fill(FillEvent::Kalshi(fill.msg)),
+                        Ok(value) => {
+                            info!("Kalshi WS Message: {:?}", value);
+                        }, 
+                        Err(e) => { error!("Kalshi WS Error: {:?}", e); break; }
+                    }
+                }
         }
 
-        // --- Bot Logic ---
-        match state {
-            BotState::Scanning => {
-                // Gatekeeper: Ensure we have data for both markets
-                if !kalshi_snapshot_received {
-                    continue;
-                }
-
-                if let Some(opp) = market.find_opportunity(edge_decimal) {
-                    if last_action.elapsed() < cooldown {
-                        continue;
-                    }
-
-                    info!("⚡ Opportunity: {}", opp.description);
-                    state = BotState::Executing;
-
-                    // Execute Entry
-                    if let Some(pos) =
-                        execute_entry(&opp, &poly_fast_yes, &poly_fast_no, &pm_clob, &kalshi).await
-                    {
-                        handler.set_position(pos);
-                    } else {
-                        state = BotState::Scanning; // Failed
-                    }
-                    last_action = std::time::Instant::now();
-                }
+        if let Some(opp) = market.find_opportunity(edge_decimal) {
+            if last_action.elapsed() < cooldown {
+                continue;
             }
-            _ => {} // Transients
+            
+            info!("⚡ Opportunity: {}", opp.description);
+            
+            // Execute Entry
+            if let Some(pos) =
+            execute_entry(&opp, &poly_fast_yes, &poly_fast_no, &pm_clob, &kalshi).await
+            {
+                handler.set_position(pos);
+            } else {
+                error!("Failed to execute entry");
+            }
+            
+            last_action = std::time::Instant::now();
         }
+
     }
 
     Ok(())
