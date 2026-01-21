@@ -40,7 +40,7 @@ pub async fn run_monitor(services: ServiceProvider, edge: f64) -> AppResult<()> 
     let kalshi = services.get_service_unchecked::<KalshiService>().await;
     let config_service = services.get_service_unchecked::<ConfigService>().await;
 
-    let symbol = Min15Symbols::ETH;
+    let symbol = Min15Symbols::BTC;
     let unwind_min_profit = Decimal::from_str("0.04").unwrap();
     let edge_decimal = Decimal::from_str(&edge.to_string()).unwrap();
 
@@ -149,7 +149,7 @@ async fn execute_entry(
 ) -> Option<Position> {
     // 1. Sizing
     let poly_cents = (opp.poly_price * Decimal::from(100)).ceil().to_u32().unwrap_or(100);
-    let sizing = ArbSizing::calculate(Decimal::from(20), poly_cents, opp.kalshi_price_cents)?;
+    let sizing = ArbSizing::calculate(Decimal::from(10), poly_cents, opp.kalshi_price_cents)?;
     
     info!("Executing Entry Size: {}", sizing.quantity);
 
@@ -198,11 +198,14 @@ async fn execute_exit(
         Ok(o) => o,
         Err(_) => return false,
     };
+    
+    info!("Selling poly order {:?}", order);
 
     // 2. Prepare Kalshi
     let k_cents = (exit.kalshi_bid_price * Decimal::from(100)).to_u32().unwrap_or(1);
     let k_order = Order::new(k_cents, pos.quantity);
 
+    info!("Selling at k_cents {} for k_order {:?}", k_cents, k_order);
     // 3. Fire
     let (p_res, k_res) = tokio::join!(
         exec.execute_order(pm_clob, order),
@@ -213,7 +216,13 @@ async fn execute_exit(
         info!("✅ Exit Successful. Profit: {}", exit.profit);
         true
     } else {
-        error!("❌ Exit Failed");
+        match (p_res.err(), k_res.err()) {
+            (Some(p_err), Some(k_err)) => error!("❌ Exit Failed: Poly {:?}, Kalshi {:?}", p_err, k_err),
+            (Some(p_err), None) => error!("❌ Exit Failed: Poly {:?}", p_err),
+            (None, Some(k_err)) => error!("❌ Exit Failed: Kalshi {:?}", k_err),
+            _ => error!("❌ Exit Failed"),
+        }
+        
         false
     }
 }
