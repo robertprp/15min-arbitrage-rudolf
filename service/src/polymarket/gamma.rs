@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use hmac::digest::consts::U256;
 use lib::AppResult;
 use polymarket_client_sdk::gamma::{types::{request::{EventByIdRequest, EventByIdRequestBuilder, EventsRequest, MarketByIdRequest, MarketBySlugRequest}, response::Market}, Client};
 use chrono::{Datelike, Timelike};
@@ -63,6 +64,8 @@ impl PolymarketGammaService {
         
         Ok(market)
     }
+    
+    
 }
 
 #[async_trait]

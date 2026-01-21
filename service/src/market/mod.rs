@@ -13,7 +13,7 @@ pub struct UnifiedMarket {
     pub strike_price: Decimal,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Exchange {
     Kalshi,
     Polymarket

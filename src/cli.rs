@@ -29,9 +29,6 @@ pub enum Commands {
     Monitor {
         #[arg(long)]
         min_edge: f64,
-        
-        #[arg(long)]
-        min_unwind_edge: f64,
     }
 }
 
@@ -66,11 +63,10 @@ impl Cli {
                 Ok(())
             }
             // Execute the new command
-            Commands::Monitor { min_edge, min_unwind_edge } => {
+            Commands::Monitor { min_edge } => {
                 let params = RunMonitorParams {
                     services,
                     min_entry_edge_cents: min_edge,
-                    min_unwind_edge_cents: min_unwind_edge,
                 };
                 
                 run_monitor(params).await

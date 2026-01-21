@@ -7,6 +7,7 @@ use alloy::signers::Signer;
 use anyhow::Context;
 use async_trait::async_trait;
 use polymarket_client_sdk::auth::Normal;
+use polymarket_client_sdk::clob::types::response::OpenOrderResponse;
 use polymarket_client_sdk::{
     auth::state::Authenticated,
     clob::{
@@ -119,6 +120,16 @@ impl PolymarketClobService {
             );
             anyhow::bail!(err_msg);
         }
+    }
+    
+    pub async fn get_order(&self, order_id: &str) -> AppResult<OpenOrderResponse> {
+        let response = self
+            .client
+            .order(order_id)
+            .await
+            .context("Failed to get order")?;
+        
+        Ok(response)
     }
 
     // pub async fn cancel_order(&self, order_id: &str) -> AppResult<()> {
