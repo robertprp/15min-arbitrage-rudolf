@@ -4,11 +4,13 @@ use alloy::primitives::{Address, U256};
 use alloy::signers::{Signer};
 use alloy::signers::k256::ecdsa::SigningKey;
 use anyhow::{bail, Context};
+use chrono::{DateTime, Utc};
 use polymarket_client_sdk::auth::LocalSigner;
-use polymarket_client_sdk::clob::types::{Order, OrderType, SignableOrder, Side};
+use polymarket_client_sdk::clob::types::{Order, OrderType, Side, SignableOrder, SignatureType};
 use polymarket_client_sdk::types::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use rand::Rng;
+use tracing::info;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::polymarket::clob::PolymarketClobService;
@@ -95,8 +97,11 @@ impl PolyFastExecution {
         order.feeRateBps = self.fee_rate_bps;
         order.nonce = U256::from(0); // FOK/GTC usually doesn't strictly require sequential nonce management if salt is unique
         order.signer = self.signer.address();
-        order.expiration = U256::ZERO; // 0 for GTC/FOK
+        order.expiration = U256::from(0); 
+        order.signatureType = SignatureType::GnosisSafe as u8;
 
+        info!("Order {:?}", &order);
+        
         let signable_order = SignableOrder::builder()
             .order(order)
             .order_type(OrderType::GTC)

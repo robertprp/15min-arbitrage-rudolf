@@ -23,6 +23,7 @@ impl PositionHandler {
 
     /// Central entry point for any trade/fill event from any exchange
     pub fn handle_fill(&mut self, event: FillEvent) {
+        info!("Handling fill event {:?}", event);
         match event {
             FillEvent::Poly(trade) => {
                 let side_str = match trade.side {
