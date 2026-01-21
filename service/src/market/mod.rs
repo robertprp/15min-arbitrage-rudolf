@@ -27,6 +27,12 @@ pub enum Min15Symbols {
     // XRP,
 }
 
+#[derive(Debug, Clone)]
+pub enum Hour1Symbols {
+    BTC,
+    ETH,
+}
+
 impl ToString for Min15Symbols {
     fn to_string(&self) -> String {
         match self {
@@ -34,6 +40,15 @@ impl ToString for Min15Symbols {
             Min15Symbols::ETH => "ETH".to_string(),
             Min15Symbols::SOL => "SOL".to_string(),
             // Min15Symbols::XRP => "XRP".to_string(),
+        }
+    }
+}
+
+impl ToString for Hour1Symbols {
+    fn to_string(&self) -> String {
+        match self {
+            Hour1Symbols::BTC => "BTC".to_string(),
+            Hour1Symbols::ETH => "ETH".to_string(),
         }
     }
 }

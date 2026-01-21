@@ -5036,6 +5036,7 @@ dependencies = [
  "kalshi-rs",
  "lib",
  "opentelemetry_sdk",
+ "polymarket-client-sdk",
  "rust_decimal",
  "service",
  "tokio",

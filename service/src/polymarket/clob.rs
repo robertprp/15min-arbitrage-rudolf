@@ -26,10 +26,10 @@ use lib::AppResult;
 
 pub struct PolymarketClobService {
     // We hold the client in an Authenticated state with the LocalSigner generic
-    client: Client<Authenticated<Normal>>,
+    pub client: Client<Authenticated<Normal>>,
     // We must hold the signer separately to pass it to the .sign() method
     // per the SDK design pattern.
-    signer: LocalSigner<SigningKey>,
+    pub signer: LocalSigner<SigningKey>,
 }
 
 impl PolymarketClobService {

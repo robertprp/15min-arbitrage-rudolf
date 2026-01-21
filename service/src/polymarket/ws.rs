@@ -1,30 +1,26 @@
+
 use std::str::FromStr;
 use std::sync::Arc;
-
 use anyhow::Context;
 use async_trait::async_trait;
 use futures::{Stream, StreamExt, TryStreamExt}; 
 use lib::AppResult;
 use polymarket_client_sdk::{
     auth::{state::Authenticated, Credentials, Normal},
-    clob::ws::{BestBidAsk, Client, TradeMessage}, // Removed BookUpdate
+    clob::ws::{BestBidAsk, Client, OrderMessage, TradeMessage},
     types::{Address, B256, U256}, 
 };
 use uuid::Uuid;
-use rust_decimal::Decimal;
-use serde::Deserialize;
 use buildstructor::Builder;
-use serde_with::{serde_as, DisplayFromStr};
 
 use crate::{
     config::service::ConfigService,
     services::{ServiceFactory, ServiceProvider},
 };
 
-/// 2. Update the Unified Enum
 #[derive(Debug)]
 pub enum PolymarketFeedUpdate {
-    BestBidAsk(BestBidAsk), // Changed from Orderbook(BookUpdate)
+    BestBidAsk(BestBidAsk),
     Trade(TradeMessage),
 }
 
@@ -55,24 +51,25 @@ impl PolymarketWebSocketService {
         Ok(Self { client })
     }
 
-    /// 3. Updated Combined Subscription
     pub fn subscribe_feed(
         &self,
         asset_ids: Vec<U256>, 
         market_ids: Vec<B256>, 
     ) -> AppResult<impl Stream<Item = AppResult<PolymarketFeedUpdate>>> {
+        
+        // 1. Market Data (BBA)
         let bba_stream = self.client
-            .subscribe_best_bid_ask(asset_ids) // Adjusted to standard SDK method if `subscribe_market_with_options` is not available, or use specific method if SDK supports it.
+            .subscribe_best_bid_ask(asset_ids)
             .context("Failed to subscribe to market BestBidAsk")?
             .map(|res| res.map(PolymarketFeedUpdate::BestBidAsk)).map_err(Into::into);
         
-        // B. Subscribe to Trades (unchanged)
+        // 2. Market Data (Trades - Optional, good for volume tracking)
         let trade_stream = self.client
-            .subscribe_trades(market_ids)
+            .subscribe_trades(market_ids.clone())
             .context("Failed to subscribe to trades")?
             .map(|res| res.map(PolymarketFeedUpdate::Trade).map_err(Into::into));
 
-        // C. Merge Streams
+        // Merge Streams
         let combined_stream = futures::stream::select(bba_stream, trade_stream);
 
         Ok(combined_stream)

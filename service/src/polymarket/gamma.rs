@@ -1,14 +1,14 @@
 use async_trait::async_trait;
 use lib::AppResult;
 use polymarket_client_sdk::gamma::{types::{request::{EventByIdRequest, EventByIdRequestBuilder, EventsRequest, MarketByIdRequest, MarketBySlugRequest}, response::Market}, Client};
+use chrono::{Datelike, Timelike};
+use chrono_tz::America::New_York;
 
-use crate::{market::Min15Symbols, services::{ServiceFactory, ServiceProvider}};
+use crate::{market::{Hour1Symbols, Min15Symbols}, services::{ServiceFactory, ServiceProvider}};
 
 pub struct PolymarketGammaService {
     client: Client
 }
-
-
 
 impl PolymarketGammaService {
     pub fn new() -> Self {
@@ -28,6 +28,37 @@ impl PolymarketGammaService {
         let floored_ts = Self::get_floored_15min_timestamp(current_ts);
         let market_slug = format!("{}-updown-15m-{}", symbol.to_string().to_lowercase(), floored_ts);
         
+        let market = self.client.market_by_slug(&MarketBySlugRequest::builder().slug(market_slug).build()).await?;
+        
+        Ok(market)
+    }
+
+    pub async fn get_current_1h_market_by_symbol(&self, symbol: Hour1Symbols) -> AppResult<Market> {
+        // Format: bitcoin-up-or-down-january-20-4pm-et
+        
+        let now = chrono::Utc::now().with_timezone(&New_York);
+        
+        // Target next full hour
+        let target_time = now
+            .with_minute(0).unwrap()
+            .with_second(0).unwrap()
+            .with_nanosecond(0).unwrap()
+            .checked_add_signed(chrono::Duration::hours(1))
+            .ok_or_else(|| anyhow::anyhow!("Time calculation overflow"))?;
+
+        let asset_str = match symbol {
+            Hour1Symbols::BTC => "bitcoin",
+            Hour1Symbols::ETH => "ethereum",
+        };
+
+        // Full month name (lowercase), Day, Hour (12h format), AM/PM (lowercase)
+        let month = target_time.format("%B").to_string().to_lowercase();
+        let day = target_time.day();
+        let hour_12 = target_time.format("%l").to_string().trim().to_string(); // %l is space padded
+        let am_pm = target_time.format("%P").to_string();
+
+        let market_slug = format!("{}-up-or-down-{}-{}-{}{}-et", asset_str, month, day, hour_12, am_pm);
+
         let market = self.client.market_by_slug(&MarketBySlugRequest::builder().slug(market_slug).build()).await?;
         
         Ok(market)

@@ -24,6 +24,7 @@ tracing-subscriber.workspace = true
 futures = { workspace = true }
 anyhow = { workspace = true }
 futures-util = { workspace = true }
+polymarket-client-sdk = { workspace = true }
 kalshi-rs = { workspace = true }
 
 [workspace.dependencies]
