@@ -4,9 +4,7 @@ use rust_decimal::Decimal;
 use polymarket_client_sdk::{clob::ws::BestBidAsk, types::U256};
 use crate::strategy::book::Orderbook;
 use rust_decimal::prelude::ToPrimitive;
-
-// Assuming TickerUpdateMessage is defined in another module or locally
-// use kalshi_rs::websocket::models::TickerUpdateMessage; 
+use crate::strategy::Position;
 
 #[derive(Debug)]
 pub struct Opportunity {
@@ -14,12 +12,23 @@ pub struct Opportunity {
     pub cost: Decimal,
     pub potential_profit: Decimal,
     
-    // 
+    // Execution details
     pub poly_token_id: U256,
     pub poly_price: Decimal,
     pub kalshi_ticker: String,
     pub kalshi_side: String, // "yes" or "no"
     pub kalshi_price_cents: u32,
+}
+
+#[derive(Debug)]
+pub struct ExitOpportunity {
+    pub description: String,
+    pub exit_value: Decimal,
+    pub profit: Decimal,
+    
+    // Execution details (Prices to Sell at)
+    pub poly_bid_price: Decimal,
+    pub kalshi_bid_price: Decimal, 
 }
 
 pub struct DualExchangeMarket {
@@ -46,7 +55,7 @@ impl DualExchangeMarket {
         }
     }
 
-    // --- Polymarket Update ---
+    // ... [update_poly and update_kalshi_delta remain unchanged] ...
     pub fn update_poly(&mut self, update: BestBidAsk) {
         let book = if update.asset_id == self.poly_yes_asset {
             &mut self.poly_yes
@@ -67,14 +76,11 @@ impl DualExchangeMarket {
         }
     }
 
-    // --- Kalshi Update (FIXED) ---
     pub fn update_kalshi_delta(&mut self, ticker_update: TickerUpdateMessage) {
-        // Optional: Ensure we are updating the correct ticker
         if ticker_update.market_ticker != self.kalshi_ticker {
             return;
         }
         
-        // Clear old snapshots
         self.kalshi_yes.bids.clear();
         self.kalshi_yes.asks.clear();
         self.kalshi_no.bids.clear();
@@ -83,38 +89,23 @@ impl DualExchangeMarket {
         let one_hundred = Decimal::from(100);
         let one = Decimal::from(1);
 
-        // 1. Process Yes Bid
-        // If there is a bid for Yes, we add it to kalshi_yes.bids
-        // AND we calculate the implied Ask for No (1 - YesBid)
+        // Process Bids/Asks (Logic unchanged from original file)
         if ticker_update.yes_bid > 0 {
             let yes_bid_price = Decimal::from(ticker_update.yes_bid) / one_hundred;
-            
-            // Explicit Yes Bid
             self.kalshi_yes.update_bid(yes_bid_price, one);
-
-            // Implied No Ask: Buying No is mathematically selling Yes
-            // Price = 1.00 - yes_bid_price
             let no_ask_price = one - yes_bid_price;
             self.kalshi_no.update_ask(no_ask_price, one);
         }
 
-        // 2. Process Yes Ask
-        // If there is an ask for Yes, we add it to kalshi_yes.asks
-        // AND we calculate the implied Bid for No (1 - YesAsk)
         if ticker_update.yes_ask > 0 {
             let yes_ask_price = Decimal::from(ticker_update.yes_ask) / one_hundred;
-
-            // Explicit Yes Ask
             self.kalshi_yes.update_ask(yes_ask_price, one);
-
-            // Implied No Bid: Selling No is mathematically buying Yes
-            // Price = 1.00 - yes_ask_price
             let no_bid_price = one - yes_ask_price;
             self.kalshi_no.update_bid(no_bid_price, one);
         }
     }
     
-    // --- Arbitrage Logic ---
+    // --- Entry Logic (Buying) ---
     pub fn find_opportunity(&self, edge: Decimal) -> Option<Opportunity> {
             let one = Decimal::from(1);
             let one_hundred = Decimal::from(100);
@@ -128,15 +119,12 @@ impl DualExchangeMarket {
                 
                 if total_cost < one {
                     let real_cost = p_ask + k_ask;
-                    
-                    // Calculate Kalshi price in cents: (k_ask * 100).ceil()
                     let k_cents = (k_ask * one_hundred).ceil().to_u32().unwrap_or(99);
     
                     return Some(Opportunity {
-                        description: format!("Buy Poly YES ({}) + Buy Kalshi NO ({}). Edge: {}", p_ask, k_ask, edge),
+                        description: format!("Buy Poly YES ({}) + Buy Kalshi NO ({}). Cost: {}", p_ask, k_ask, real_cost),
                         cost: real_cost,
                         potential_profit: one - real_cost,
-                        // Execution
                         poly_token_id: self.poly_yes_asset,
                         poly_price: p_ask,
                         kalshi_ticker: self.kalshi_ticker.clone(),
@@ -158,10 +146,9 @@ impl DualExchangeMarket {
                      let k_cents = (k_ask * one_hundred).ceil().to_u32().unwrap_or(99);
     
                      return Some(Opportunity {
-                        description: format!("Buy Poly NO ({}) + Buy Kalshi YES ({}). Edge: {}", p_ask, k_ask, edge),
+                        description: format!("Buy Poly NO ({}) + Buy Kalshi YES ({}). Cost: {}", p_ask, k_ask, real_cost),
                         cost: real_cost,
                         potential_profit: one - real_cost,
-                        // Execution
                         poly_token_id: self.poly_no_asset,
                         poly_price: p_ask,
                         kalshi_ticker: self.kalshi_ticker.clone(),
@@ -172,5 +159,51 @@ impl DualExchangeMarket {
             }
     
             None
+    }
+
+    // --- Exit Logic (Selling/Unwinding) ---
+    pub fn find_exit_opportunity(&self, position: &Position, min_profit: Decimal) -> Option<ExitOpportunity> {
+        // We need to Sell what we Hold.
+        // We sell into the Bids.
+        
+        let p_bid_opt;
+        let k_bid_opt;
+
+        // 1. Identify which books to check based on position
+        if position.poly_token_id == self.poly_yes_asset {
+            // We hold Poly YES, we need to sell Poly YES
+            p_bid_opt = self.poly_yes.best_bid();
+        } else {
+            // We hold Poly NO
+            p_bid_opt = self.poly_no.best_bid();
         }
+
+        if position.kalshi_side == "yes" {
+            // We hold Kalshi YES, sell Kalshi YES
+            k_bid_opt = self.kalshi_yes.best_bid();
+        } else {
+            // We hold Kalshi NO, sell Kalshi NO
+            k_bid_opt = self.kalshi_no.best_bid();
+        }
+
+        // 2. Check if prices exist
+        if let (Some(p_bid), Some(k_bid)) = (p_bid_opt, k_bid_opt) {
+            let exit_value = p_bid + k_bid;
+            let target_exit_value = position.entry_cost_per_unit * (Decimal::from(1) + min_profit);
+
+            // 3. Check if exit value meets target
+            if exit_value >= target_exit_value {
+                let profit = exit_value - position.entry_cost_per_unit;
+                return Some(ExitOpportunity {
+                    description: format!("Unwind: Sell Poly ({}) + Sell Kalshi ({}). Total: {}", p_bid, k_bid, exit_value),
+                    exit_value,
+                    profit,
+                    poly_bid_price: p_bid,
+                    kalshi_bid_price: k_bid
+                });
+            }
+        }
+
+        None
+    }
 }

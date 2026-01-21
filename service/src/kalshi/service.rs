@@ -8,7 +8,7 @@ use lib::AppResult;
 use chrono_tz::America::New_York;
 use tracing::info;
 
-use crate::{config::service::ConfigService, market::Min15Symbols, services::{ServiceFactory, ServiceProvider}, strategy::Order};
+use crate::{config::service::ConfigService, market::{Hour1Symbols, Min15Symbols}, services::{ServiceFactory, ServiceProvider}, strategy::Order};
 
 pub struct KalshiService {
     client: KalshiClient,
@@ -104,6 +104,34 @@ impl KalshiService {
         info!("Kalshi ticker: {}", ticker);
         
         self.client.get_event(&ticker).await.context("Failed to get event")
+    }
+
+    pub async fn get_current_1h_market_by_symbol(&self, symbol: Hour1Symbols) -> AppResult<GetEventResponse> {
+        let asset = symbol.to_string();
+        let now_utc = Utc::now();
+        let now_ny = now_utc.with_timezone(&New_York);
+        
+        let current_minute = now_ny.minute();
+        // Calculate minutes to add to reach the next full hour
+        let minutes_to_add = 60 - (current_minute % 60);
+        
+        let target_time = now_ny
+            .with_second(0).unwrap()
+            .with_nanosecond(0).unwrap()
+            .checked_add_signed(chrono::Duration::minutes(minutes_to_add as i64))
+            .ok_or_else(|| anyhow::anyhow!("Time calculation overflow"))?;
+        
+        let date_part = target_time.format("%y").to_string(); 
+        let day_time_part = target_time.format("%d%H%M").to_string();
+        
+        let month_part = target_time.format("%b").to_string().to_uppercase();
+        let timestamp_str = format!("{}{}{}", date_part, month_part, day_time_part);
+        // Ticker format: KXBTC1H-26JAN201500
+        let ticker = format!("KX{}1H-{}", asset, timestamp_str);
+        
+        info!("Kalshi 1H ticker: {}", ticker);
+        
+        self.client.get_event(&ticker).await.context("Failed to get 1H event")
     }
     
     pub async fn subscribe_orderbook(&self, ticker: String) -> AppResult<()> {
