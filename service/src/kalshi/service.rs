@@ -5,10 +5,10 @@ use async_trait::async_trait;
 use chrono::{Timelike, Utc};
 use chrono_tz::America::New_York;
 use kalshi_rs::{
-    Account, KalshiClient, KalshiWebsocketClient, events::models::GetEventResponse,
-    portfolio::models::CreateOrderRequest,
+    events::models::GetEventResponse, markets::models::GetMarketOrderbookResponse, portfolio::models::CreateOrderRequest, Account, KalshiClient, KalshiWebsocketClient
 };
 use lib::AppResult;
+use serde_json::Value;
 use tracing::info;
 
 use crate::{
@@ -68,7 +68,7 @@ impl KalshiService {
             no_price: None,
             no_price_dollars: None,
             order_group_id: None,
-            post_only: None,
+            post_only: Some(false),
             reduce_only: None,
             self_trade_prevention_type: None,
             time_in_force: Some(String::from("good_till_canceled")),
@@ -82,16 +82,16 @@ impl KalshiService {
             req.no_price = Some(price_cents.into());
         }
         
-        if (action.eq("sell")) {
-            req.post_only = Some(false);
+        
+        if (action.eq("buy")) {
             // TODO fix this bc maybe price_cents is less than 3.
-            let reduction_cents = 3;
+            let cents = 2;
             if side.eq("yes") {
                 // Reduce few cents yes_price to make sure we are filled
-                req.yes_price = Some((price_cents - reduction_cents).into());
+                req.yes_price = Some((price_cents + cents).into());
             } else {
                 // Reduce few cents no_price to make sure we are filled
-                req.no_price = Some((price_cents - reduction_cents).into());
+                req.no_price = Some((price_cents + cents).into());
             }
         }
 
@@ -172,29 +172,39 @@ impl KalshiService {
             .context("Failed to get 1H event")
     }
 
-    pub async fn subscribe_orderbook(&self, ticker: String) -> AppResult<()> {
-        let key = vec!["orderbook_delta"];
-        let value = vec![ticker.as_str()];
+    pub async fn subscribe_orderbook(&self, market_ticker: String) -> AppResult<()> {
+        let channels = vec!["orderbook_delta"];
+        
+        // let market_id = self.get_market_id_by_market_ticker(symbol.clone(), market_ticker.clone()).await?;
+        let markets = vec![market_ticker.as_str()];
+        
         self.ws_client
-            .subscribe(key, value)
+            .subscribe(channels, markets)
             .await
             .context("Failed to subscribe to Kalshi WebSocket")
     }
 
-    pub async fn subscribe_market_ticker(&self, ticker: String) -> AppResult<()> {
-        let key = vec!["ticker"];
-        let value = vec![ticker.as_str()];
-        self.ws_client
-            .subscribe(key, value)
-            .await
-            .context("Failed to subscribe to Kalshi WebSocket")
-    }
+    // pub async fn subscribe_market_ticker(&self, ticker: String) -> AppResult<()> {
+    //     let key = vec!["ticker"];
+    //     let value = vec![ticker.as_str()];
+    //     self.ws_client
+    //         .subscribe(key, value)
+    //         .await
+    //         .context("Failed to subscribe to Kalshi WebSocket")
+    // }
 
     pub async fn subscribe_fills(&self) -> AppResult<()> {
         let key = vec!["fill"];
         let value = vec![];
         self.ws_client
             .subscribe(key, value)
+            .await
+            .context("Failed to subscribe to Kalshi WebSocket")
+    }
+    
+    pub async fn get_market_orderbook(&self, ticker: String) -> AppResult<GetMarketOrderbookResponse> {
+        self.client
+            .get_market_orderbook(&ticker, None)
             .await
             .context("Failed to subscribe to Kalshi WebSocket")
     }
