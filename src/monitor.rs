@@ -73,14 +73,20 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     let kalshi_event = kalshi
         .get_current_15min_market_by_symbol(symbol.clone())
         .await?;
-    let kalshi_ticker = kalshi_event.markets[0].ticker.clone();
-    kalshi
-        .subscribe_market_ticker(kalshi_ticker.clone())
-        .await?;
+    let market_id = kalshi_event.markets[0].ticker.clone();
+    let kalshi_ticker = market_id.clone();
+    
+    // 1. SUBSCRIBE WS
+    // Note: We expect an OrderbookSnapshot to arrive shortly after this
+    kalshi.subscribe_orderbook(market_id.clone()).await?;
     kalshi.subscribe_fills().await?;
-
+    
     // 3. Setup Strategy Components
     let mut market = DualExchangeMarket::new(asset_yes, asset_no, kalshi_ticker.clone());
+    
+    // State flag to ensure we don't calculate arbs until we have the snapshot
+    let mut kalshi_snapshot_received = false;
+
     let mut handler = PositionHandler::new();
 
     // Execution Helpers
@@ -110,9 +116,22 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
             // --- Kalshi Stream ---
             msg = kalshi.ws_client.next_message() => {
                 match msg {
-                    Ok(KalshiSocketMessage::TickerUpdate(t)) => market.update_kalshi_delta(t.msg),
+                    Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
+                        // This replaces the REST initialization
+                        market.apply_kalshi_ws_snapshot(snapshot.msg);
+                        kalshi_snapshot_received = true;
+                        info!("✅ Kalshi Snapshot received and applied");
+                    },
+                    Ok(KalshiSocketMessage::OrderbookDelta(orderbook_delta)) => {
+                        // Only apply deltas if we have seen the snapshot (though usually snapshot comes first)
+                        if kalshi_snapshot_received {
+                            market.apply_kalshi_delta(orderbook_delta);
+                        }
+                    },
                     Ok(KalshiSocketMessage::UserFill(fill)) => handler.handle_fill(FillEvent::Kalshi(fill.msg)),
-                    Ok(_) => {}, // Ignore others
+                    Ok(value) => {
+                        info!("Kalshi WS Message: {:?}", value);
+                    }, 
                     Err(e) => { error!("Kalshi WS Error: {:?}", e); break; }
                 }
             }
@@ -121,6 +140,11 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         // --- Bot Logic ---
         match state {
             BotState::Scanning => {
+                // Gatekeeper: Ensure we have data for both markets
+                if !kalshi_snapshot_received {
+                    continue;
+                }
+
                 if let Some(opp) = market.find_opportunity(edge_decimal) {
                     if last_action.elapsed() < cooldown {
                         continue;
@@ -147,8 +171,7 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     Ok(())
 }
 
-// --- Helper Functions to keep loop clean ---
-
+// ... (execute_entry helper function remains unchanged) ...
 async fn execute_entry(
     opp: &Opportunity,
     poly_yes: &PolyFastExecution,
@@ -163,9 +186,11 @@ async fn execute_entry(
     // 2. Prepare Poly
     let exec = if opp.poly_token_id == poly_yes.token_id { poly_yes } else { poly_no };
     
+    
+    let inc = Decimal::from_str("0.01").unwrap();
     // For BUY: makerAmount = USDC, takerAmount = Outcome Tokens.
     // We send 'quantity_dec' as size.
-    let order = exec.build_fok_order(opp.poly_price, quantity_dec, Side::Buy).ok()?;
+    let order = exec.build_fok_order(opp.poly_price + inc, quantity_dec, Side::Buy).ok()?;
 
     // 3. Prepare Kalshi
     let k_order = Order::new(opp.kalshi_price_cents, sizing.quantity);
