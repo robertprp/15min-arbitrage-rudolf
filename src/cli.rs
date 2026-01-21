@@ -7,7 +7,7 @@ use service::{config::service::ConfigService, kalshi::service::KalshiService, ma
 use tokio::join;
 use tracing::{info, warn};
 
-use crate::monitor::run_monitor;
+use crate::monitor::{run_monitor, RunMonitorParams};
 
 
 #[derive(Parser)]
@@ -27,8 +27,11 @@ pub enum Commands {
     Unified,
     /// Monitor 15min BTC markets on both exchanges
     Monitor {
-        #[arg(short, long)]
-        edge: f64,
+        #[arg(long)]
+        min_edge: f64,
+        
+        #[arg(long)]
+        min_unwind_edge: f64,
     }
 }
 
@@ -63,8 +66,14 @@ impl Cli {
                 Ok(())
             }
             // Execute the new command
-            Commands::Monitor { edge } => {
-                run_monitor(services, edge).await
+            Commands::Monitor { min_edge, min_unwind_edge } => {
+                let params = RunMonitorParams {
+                    services,
+                    min_entry_edge_cents: min_edge,
+                    min_unwind_edge_cents: min_unwind_edge,
+                };
+                
+                run_monitor(params).await
             }
         }
         

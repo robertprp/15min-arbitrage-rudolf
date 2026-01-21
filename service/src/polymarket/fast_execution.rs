@@ -129,6 +129,7 @@ impl PolyFastExecution {
         let response = clob_service.client.post_order(signed_order).await?;
         
         if response.success {
+            info!("Polymaket Post order response {:?}", response);
             Ok(response.order_id)
         } else {
              anyhow::bail!("Order failed: {:?}", response.error_msg);
