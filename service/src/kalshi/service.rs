@@ -84,7 +84,15 @@ impl KalshiService {
         
         if (action.eq("sell")) {
             req.post_only = Some(false);
-            req.reduce_only = Some(true);
+            // TODO fix this bc maybe price_cents is less than 3.
+            let reduction_cents = 3;
+            if side.eq("yes") {
+                // Reduce few cents yes_price to make sure we are filled
+                req.yes_price = Some((price_cents - reduction_cents).into());
+            } else {
+                // Reduce few cents no_price to make sure we are filled
+                req.no_price = Some((price_cents - reduction_cents).into());
+            }
         }
 
         let response = self.client.create_order(&req).await?;

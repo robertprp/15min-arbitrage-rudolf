@@ -5,7 +5,7 @@ use std::time::Duration;
 use futures::StreamExt;
 use kalshi_rs::websocket::models::KalshiSocketMessage;
 use lib::AppResult;
-use polymarket_client_sdk::clob::types::Side;
+use polymarket_client_sdk::{clob::types::Side, types::U256};
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use service::{
@@ -20,9 +20,7 @@ use service::{
     },
     services::ServiceProvider,
     strategy::{
-        ArbSizing, FillEvent, Order, Position,
-        handler::PositionHandler,
-        market::{DualExchangeMarket, ExitOpportunity, Opportunity},
+        handler::PositionHandler, market::{DualExchangeMarket, ExitOpportunity, Opportunity}, ArbSizing, FillEvent, Order, PairedPosition, Position
     },
 };
 use tracing::{error, info, warn};
@@ -31,14 +29,11 @@ use tracing::{error, info, warn};
 enum BotState {
     Scanning,
     Executing,
-    Holding,
-    Unwinding,
 }
 
 pub struct RunMonitorParams {
     pub services: ServiceProvider,
     pub min_entry_edge_cents: f64,
-    pub min_unwind_edge_cents: f64,
 }
 
 pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
@@ -57,8 +52,6 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     let config_service = services.get_service_unchecked::<ConfigService>().await;
 
     let symbol = Min15Symbols::BTC;
-    let unwind_min_profit_cents =
-        Decimal::from_str(&params.min_unwind_edge_cents.to_string()).unwrap();
     let edge_decimal = Decimal::from_str(&params.min_entry_edge_cents.to_string()).unwrap();
 
     // 2. Setup Market Data
@@ -141,40 +134,10 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
                         execute_entry(&opp, &poly_fast_yes, &poly_fast_no, &pm_clob, &kalshi).await
                     {
                         handler.set_position(pos);
-                        state = BotState::Holding;
                     } else {
                         state = BotState::Scanning; // Failed
                     }
                     last_action = std::time::Instant::now();
-                }
-            }
-            BotState::Holding => {
-                if let Some(pos) = &handler.current_position {
-                    if let Some(exit) = market.find_exit_opportunity(pos, unwind_min_profit_cents) {
-                        info!("🏁 Exit Signal: {}", exit.description);
-                        state = BotState::Unwinding;
-
-                        // Execute Exit
-                        if execute_exit(
-                            &pos,
-                            &exit,
-                            &poly_fast_yes,
-                            &poly_fast_no,
-                            &pm_clob,
-                            &kalshi,
-                        )
-                        .await
-                        {
-                            handler.clear_position();
-                            state = BotState::Scanning;
-                        } else {
-                            state = BotState::Holding; // Retry
-                        }
-                        last_action = std::time::Instant::now();
-                    }
-                } else {
-                    // Handler lost position (maybe managed manually?), reset
-                    state = BotState::Scanning;
                 }
             }
             _ => {} // Transients
@@ -192,35 +155,22 @@ async fn execute_entry(
     poly_no: &PolyFastExecution,
     pm_clob: &PolymarketClobService,
     kalshi: &KalshiService,
-) -> Option<Position> {
-    // 1. Sizing
-    let poly_cents = (opp.poly_price * Decimal::from(100))
-        .ceil()
-        .to_u32()
-        .unwrap_or(100);
+) -> Option<PairedPosition> { 
+    let poly_cents = (opp.poly_price * Decimal::from(100)).ceil().to_u32().unwrap_or(100);
     let sizing = ArbSizing::calculate(Decimal::from(10), poly_cents, opp.kalshi_price_cents)?;
-
-    info!("Executing Entry Size: {}", sizing.quantity);
-    
-    info!("Opportunity: {:?}", opp);
-    info!("Sizing: {:?}", sizing);
-    info!("Poly cents: {}", poly_cents);
+    let quantity_dec = Decimal::from(sizing.quantity);
 
     // 2. Prepare Poly
-    let exec = if opp.poly_token_id == poly_yes.token_id {
-        poly_yes
-    } else {
-        poly_no
-    };
-    let order = exec
-        .build_fok_order(opp.poly_price, Decimal::from(sizing.quantity), Side::Buy)
-        .ok()?;
+    let exec = if opp.poly_token_id == poly_yes.token_id { poly_yes } else { poly_no };
+    
+    // For BUY: makerAmount = USDC, takerAmount = Outcome Tokens.
+    // We send 'quantity_dec' as size.
+    let order = exec.build_fok_order(opp.poly_price, quantity_dec, Side::Buy).ok()?;
 
     // 3. Prepare Kalshi
     let k_order = Order::new(opp.kalshi_price_cents, sizing.quantity);
-    
-    info!("Poly {:?}", order);
-    info!("Kalshi {:?}", k_order);
+
+    info!("🚀 Executing Entry...");
 
     // 4. Fire
     let (p_res, k_res) = tokio::join!(
@@ -233,155 +183,52 @@ async fn execute_entry(
         )
     );
 
-    if p_res.is_ok() && k_res.is_ok() {
-        info!("✅ Entry Successful on both markets");
-        Some(Position {
-            quantity: sizing.quantity,
-            entry_cost_per_unit: opp.cost,
-            entry_time: std::time::Instant::now(),
-            poly_token_id: opp.poly_token_id,
-            poly_side: "buy".to_string(),
-            kalshi_ticker: opp.kalshi_ticker.clone(),
-            kalshi_side: opp.kalshi_side.clone(),
-        })
-    } else {
-        error!(
-            "❌ Entry Failed: Poly {:?}, Kalshi {:?}",
-            p_res.err(),
-            k_res.err()
-        );
-        None
-    }
-}
+    match (p_res, k_res) {
+        (Ok(poly_resp), Ok(_)) => {
+            info!("✅ Entry Successful on both markets");
+            
+            // --- CRITICAL FIX: Use actual filled amount from Poly response ---
+            // For a Buy order, taking_amount is the Outcome Tokens we received.
+            let poly_filled_qty = poly_resp.taking_amount;
+            
+            info!("📝 Poly Filled Qty: {} (Requested: {})", poly_filled_qty, quantity_dec);
 
-async fn execute_exit(
-    pos: &Position,
-    exit: &ExitOpportunity,
-    poly_yes: &PolyFastExecution,
-    poly_no: &PolyFastExecution,
-    pm_clob: &PolymarketClobService,
-    kalshi: &KalshiService,
-) -> bool {
-    // 1. Prepare Execution Context
-    let exec = if pos.poly_token_id == poly_yes.token_id {
-        poly_yes
-    } else {
-        poly_no
-    };
-    
-    info!("Position {:?}", pos);
-    info!("Exit {:?}", exit);
-    
-    // Calculate Kalshi parameters once (they don't change on retry)
-    let k_cents = (exit.kalshi_bid_price * Decimal::from(100))
-        .to_u32()
-        .unwrap_or(1);
-    
-    info!("Kalshi cents: {}", k_cents);
-    let k_order = Order::new(k_cents, pos.quantity);
-
-    info!("Kalshi order: {:?}", k_order);
-    // Track status
-    let mut poly_done = false;
-    let mut kalshi_done = false;
-
-    // Build initial Poly order
-    let poly_order_attempt = exec.build_fok_order(
-        exit.poly_bid_price, 
-        Decimal::from(pos.quantity), 
-        Side::Sell
-    );
-
-    // If we can't even build the first order, fail immediately before sending anything
-    let poly_order = match poly_order_attempt {
-        Ok(o) => o,
-        Err(e) => {
-            error!("❌ Failed to build initial Poly exit order: {:?}", e);
-            return false;
-        }
-    };
-    info!("Poly order: {:?}", poly_order);
-
-    info!("📉 Attempting Exit: Poly Price {}, Kalshi Cents {}", exit.poly_bid_price, k_cents);
-
-    let (p_res, k_res) = tokio::join!(
-        exec.execute_order(pm_clob, poly_order),
-        kalshi.place_fok_order(
-            pos.kalshi_ticker.clone(),
-            pos.kalshi_side.clone(),
-            "sell".to_string(),
-            k_order.clone()
-        )
-    );
-
-    if p_res.is_ok() { poly_done = true; }
-    if k_res.is_ok() { kalshi_done = true; }
-
-    // --- Retry Logic for Partial Fills ---
-
-    let max_retries = 5;
-    let mut attempts = 0;
-
-    while (!poly_done || !kalshi_done) && attempts < max_retries {
-        // If both failed initially, we might return false immediately, 
-        // OR we can try to retry both. Here we retry both if both failed, 
-        // but usually, if both fail, it's a signal issue. 
-        // We prioritize the case where ONE succeeded and we are "legged".
-        
-        attempts += 1;
-        warn!(
-            "⚠️ Partial Exit Detected! Poly: {}, Kalshi: {}. Retrying attempt {}/{}", 
-            if poly_done { "✅" } else { "❌" },
-            if kalshi_done { "✅" } else { "❌" },
-            attempts, max_retries
-        );
-
-        // Retry Polymarket
-        if !poly_done {
-            // Must REBUILD order to get a fresh Salt/Timestamp
-            if let Ok(new_order) = exec.build_fok_order(exit.poly_bid_price, Decimal::from(pos.quantity), Side::Sell) {
-                match exec.execute_order(pm_clob, new_order).await {
-                    Ok(_) => {
-                        info!("✅ Polymarket Exit Retry Successful");
-                        poly_done = true;
-                    },
-                    Err(e) => error!("❌ Poly Retry Failed: {:?}", e),
+            let order_id = poly_resp.order_id.clone();
+            let order = match pm_clob.get_order(&order_id).await {
+                Ok(order) => order,
+                Err(err) => {
+                    error!("Failed to get order: {}", err);
+                    return None
                 }
-            }
+            };
+            
+            info!("Open order response: {:?}", order);
+            let size = order.size_matched;
+            
+            let size = size * Decimal::from_str("0.982").unwrap();
+            
+            info!("Poly response: {:?}", poly_resp);
+            let poly_pos = Position {
+                exchange: service::market::Exchange::Polymarket,
+                id: opp.poly_token_id.to_string(), // Store ID as string
+                side: "buy".to_string(), // We bought, so we hold it (to sell later)
+                quantity: size, // Exact amount from response
+                price: opp.poly_price,
+                timestamp: std::time::Instant::now(),
+            };
+
+            let kalshi_pos = Position {
+                exchange: service::market::Exchange::Kalshi,
+                id: opp.kalshi_ticker.clone(),
+                side: opp.kalshi_side.clone(),
+                quantity: quantity_dec, // Kalshi currently assumed exact
+                price: Decimal::from(opp.kalshi_price_cents) / Decimal::from(100),
+                timestamp: std::time::Instant::now(),
+            };
+
+            Some(PairedPosition::new(poly_pos, kalshi_pos))
         }
-
-        // Retry Kalshi
-        if !kalshi_done {
-            // Kalshi API handles new orders fine, just resend
-            match kalshi.place_fok_order(
-                pos.kalshi_ticker.clone(), 
-                pos.kalshi_side.clone(), 
-                "sell".to_string(), 
-                k_order.clone()
-            ).await {
-                Ok(_) => {
-                    info!("✅ Kalshi Exit Retry Successful");
-                    kalshi_done = true;
-                },
-                Err(e) => error!("❌ Kalshi Retry Failed: {:?}", e),
-            }
-        }
-    }
-
-    // --- Final Result ---
-
-    if poly_done && kalshi_done {
-        info!("🏁 Exit Fully Complete. Profit: {}", exit.profit);
-        true
-    } else {
-        error!(
-            "💀 Critical Exit Failure after retries. Poly Filled: {}, Kalshi Filled: {}. Manual Intervention Required.", 
-            poly_done, kalshi_done
-        );
-        // Even if partially filled, we return false so the bot state doesn't reset to Scanning 
-        // cleanly without the operator knowing something is wrong. 
-        // (Or you might want to return true to stop the bot from trying to sell the *whole* amount again).
-        // For safety here: false.
-        false
+        (Err(e), _) => { error!("❌ Poly Entry Failed: {:?}", e); None },
+        (_, Err(e)) => { error!("❌ Kalshi Entry Failed: {:?}", e); None },
     }
 }

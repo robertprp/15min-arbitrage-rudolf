@@ -1,15 +1,15 @@
 use anyhow::bail;
-// service/src/strategy/handler.rs
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use tracing::{info, warn};
 use polymarket_client_sdk::clob::types::Side;
 
-use crate::strategy::{FillEvent, Position};
+// Updated imports
+use crate::strategy::{FillEvent, PairedPosition};
+use crate::market::Exchange; // Needed to match exchange strings to Enum if strict, but here we do simple string matching
 
-/// Manages the state of the active position based on execution reports
 pub struct PositionHandler {
-    pub current_position: Option<Position>,
+    pub current_position: Option<PairedPosition>, 
     pub realized_pnl: Decimal,
 }
 
@@ -19,6 +19,18 @@ impl PositionHandler {
             current_position: None,
             realized_pnl: Decimal::ZERO,
         }
+    }
+
+    pub fn set_position(&mut self, pos: PairedPosition) {
+        self.current_position = Some(pos);
+    }
+
+    pub fn clear_position(&mut self) {
+        self.current_position = None;
+    }
+    
+    pub fn has_position(&self) -> bool {
+        self.current_position.is_some()
     }
 
     /// Central entry point for any trade/fill event from any exchange
@@ -54,45 +66,39 @@ impl PositionHandler {
     }
 
     /// Core logic to update the tracking struct
-    fn update_position_state(&mut self, exchange: &str, side: &str, quantity: Decimal, price: Decimal) {
-        // logic:
-        // 1. If we have NO position and side is BUY -> We are entering (partially or fully)
-        // 2. If we HAVE position and side is SELL -> We are exiting
-        // Note: This is a simplified state machine assuming the bot only goes Long -> Short.
-        
+    fn update_position_state(&mut self, exchange_name: &str, side: &str, quantity: Decimal, price: Decimal) {
         let is_buy = side.eq_ignore_ascii_case("buy");
 
-        if let Some(pos) = &mut self.current_position {
+        if let Some(paired_pos) = &mut self.current_position {
             if !is_buy {
                 // We are selling/unwinding
-                info!("📉 Reducing position on {} by {}", exchange, quantity);
-                // In a real scenario, you would decrement pos.quantity here.
-                // For this MVP, if we sell, we assume we are closing.
+                // We need to find which leg of the pair corresponds to this exchange to calculate PnL
                 
-                let profit = (price - pos.entry_cost_per_unit) * quantity;
-                self.realized_pnl += profit;
-                
-                // If this looks like a full exit (heuristic), clear position
-                // In a production bot, you'd track cumulative_filled_quantity
-                info!("💰 Realized PnL update: {}", self.realized_pnl);
+                // Find the specific position leg
+                let matching_leg = paired_pos.positions.iter().find(|p| {
+                     match p.exchange {
+                         Exchange::Polymarket => exchange_name == "polymarket",
+                         Exchange::Kalshi => exchange_name == "kalshi",
+                     }
+                });
+
+                if let Some(leg) = matching_leg {
+                    info!("📉 Reducing position on {} by {}", exchange_name, quantity);
+                    
+                    // Use leg.price (entry price) instead of entry_cost_per_unit
+                    let profit = (price - leg.price) * quantity;
+                    self.realized_pnl += profit;
+                    
+                    info!("💰 Realized PnL update: {}", self.realized_pnl);
+                } else {
+                    warn!("Received sell fill for {}, but no matching leg found in current position", exchange_name);
+                }
             }
         } else if is_buy {
             // We are entering
             // The `monitor.rs` creates the initial Position struct on "Intent",
             // but the Handler verifies it on "Confirmation".
-            info!("📈 Confirmed entry fill on {} for {}", exchange, quantity);
+            info!("📈 Confirmed entry fill on {} for {}", exchange_name, quantity);
         }
-    }
-
-    pub fn set_position(&mut self, pos: Position) {
-        self.current_position = Some(pos);
-    }
-
-    pub fn clear_position(&mut self) {
-        self.current_position = None;
-    }
-    
-    pub fn has_position(&self) -> bool {
-        self.current_position.is_some()
     }
 }

@@ -56,7 +56,6 @@ impl PolymarketWebSocketService {
         asset_ids: Vec<U256>, 
         market_ids: Vec<B256>, 
     ) -> AppResult<impl Stream<Item = AppResult<PolymarketFeedUpdate>>> {
-        
         // 1. Market Data (BBA)
         let bba_stream = self.client
             .subscribe_best_bid_ask(asset_ids)

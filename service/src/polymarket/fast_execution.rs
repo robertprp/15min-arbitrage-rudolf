@@ -6,6 +6,7 @@ use alloy::signers::k256::ecdsa::SigningKey;
 use anyhow::{bail, Context};
 use chrono::{DateTime, Utc};
 use polymarket_client_sdk::auth::LocalSigner;
+use polymarket_client_sdk::clob::types::response::PostOrderResponse;
 use polymarket_client_sdk::clob::types::{Order, OrderType, Side, SignableOrder, SignatureType};
 use polymarket_client_sdk::types::Decimal;
 use rust_decimal::prelude::ToPrimitive;
@@ -121,7 +122,7 @@ impl PolyFastExecution {
     }
 
     /// Sign and Post (Network Call 1)
-    pub async fn execute_order(&self, clob_service: &PolymarketClobService, signable: SignableOrder) -> AppResult<String> {
+    pub async fn execute_order(&self, clob_service: &PolymarketClobService, signable: SignableOrder) -> AppResult<PostOrderResponse> {
         // Sign
         let signed_order = clob_service.client.sign(&self.signer, signable).await?;
         
@@ -130,7 +131,7 @@ impl PolyFastExecution {
         
         if response.success {
             info!("Polymaket Post order response {:?}", response);
-            Ok(response.order_id)
+            Ok(response)
         } else {
              anyhow::bail!("Order failed: {:?}", response.error_msg);
         }

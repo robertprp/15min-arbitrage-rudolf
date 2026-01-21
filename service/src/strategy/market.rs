@@ -4,7 +4,9 @@ use rust_decimal::Decimal;
 use polymarket_client_sdk::{clob::ws::BestBidAsk, types::U256};
 use crate::strategy::book::Orderbook;
 use rust_decimal::prelude::ToPrimitive;
-use crate::strategy::Position;
+// Import PairedPosition and Exchange
+use crate::strategy::{PairedPosition, Position}; 
+use crate::market::Exchange;
 
 #[derive(Debug)]
 pub struct Opportunity {
@@ -55,7 +57,6 @@ impl DualExchangeMarket {
         }
     }
 
-    // ... [update_poly and update_kalshi_delta remain unchanged] ...
     pub fn update_poly(&mut self, update: BestBidAsk) {
         let book = if update.asset_id == self.poly_yes_asset {
             &mut self.poly_yes
@@ -89,7 +90,7 @@ impl DualExchangeMarket {
         let one_hundred = Decimal::from(100);
         let one = Decimal::from(1);
 
-        // Process Bids/Asks (Logic unchanged from original file)
+        // Process Bids/Asks
         if ticker_update.yes_bid > 0 {
             let yes_bid_price = Decimal::from(ticker_update.yes_bid) / one_hundred;
             self.kalshi_yes.update_bid(yes_bid_price, one);
@@ -159,51 +160,5 @@ impl DualExchangeMarket {
             }
     
             None
-    }
-
-    // --- Exit Logic (Selling/Unwinding) ---
-    pub fn find_exit_opportunity(&self, position: &Position, min_profit: Decimal) -> Option<ExitOpportunity> {
-        // We need to Sell what we Hold.
-        // We sell into the Bids.
-        
-        let p_bid_opt;
-        let k_bid_opt;
-
-        // 1. Identify which books to check based on position
-        if position.poly_token_id == self.poly_yes_asset {
-            // We hold Poly YES, we need to sell Poly YES
-            p_bid_opt = self.poly_yes.best_bid();
-        } else {
-            // We hold Poly NO
-            p_bid_opt = self.poly_no.best_bid();
-        }
-
-        if position.kalshi_side == "yes" {
-            // We hold Kalshi YES, sell Kalshi YES
-            k_bid_opt = self.kalshi_yes.best_bid();
-        } else {
-            // We hold Kalshi NO, sell Kalshi NO
-            k_bid_opt = self.kalshi_no.best_bid();
-        }
-
-        // 2. Check if prices exist
-        if let (Some(p_bid), Some(k_bid)) = (p_bid_opt, k_bid_opt) {
-            let exit_value = p_bid + k_bid;
-            let target_exit_value = position.entry_cost_per_unit * (Decimal::from(1) + min_profit);
-
-            // 3. Check if exit value meets target
-            if exit_value >= target_exit_value {
-                let profit = exit_value - position.entry_cost_per_unit;
-                return Some(ExitOpportunity {
-                    description: format!("Unwind: Sell Poly ({}) + Sell Kalshi ({}). Total: {}", p_bid, k_bid, exit_value),
-                    exit_value,
-                    profit,
-                    poly_bid_price: p_bid,
-                    kalshi_bid_price: k_bid
-                });
-            }
-        }
-
-        None
     }
 }

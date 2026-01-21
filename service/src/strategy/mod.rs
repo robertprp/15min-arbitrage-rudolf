@@ -8,6 +8,8 @@ use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
 use polymarket_client_sdk::types::U256;
 
+use crate::market::Exchange;
+
 #[derive(Debug, Clone)]
 pub struct Order {
     pub price_cents: u32,
@@ -31,15 +33,33 @@ pub struct ArbSizing {
 /// Tracks the state of an active arbitrage position
 #[derive(Debug, Clone)]
 pub struct Position {
-    pub quantity: u32,
-    pub entry_cost_per_unit: Decimal,
-    pub entry_time: std::time::Instant,
+    pub exchange: Exchange, // "polymarket" or "kalshi"
+    pub id: String,       // Token ID (Poly) or Ticker (Kalshi)
+    pub side: String,     // "buy"/"sell" or "yes"/"no"
+    pub quantity: Decimal, // EXACT amount held
+    pub price: Decimal,
+    pub timestamp: std::time::Instant,
+}
 
-    // Asset Identifiers
-    pub poly_token_id: U256,
-    pub poly_side: String, // "buy" (entry) -> "sell" (exit) implies we hold the asset
-    pub kalshi_ticker: String,
-    pub kalshi_side: String, // "yes" or "no"
+#[derive(Debug, Clone)]
+pub struct PairedPosition {
+    pub positions: [Position; 2], 
+}
+
+impl PairedPosition {
+    pub fn new(poly: Position, kalshi: Position) -> Self {
+        Self {
+            positions: [poly, kalshi]
+        }
+    }
+
+    pub fn get_poly(&self) -> Option<&Position> {
+        self.positions.iter().find(|p| p.exchange == Exchange::Polymarket)
+    }
+
+    pub fn get_kalshi(&self) -> Option<&Position> {
+        self.positions.iter().find(|p| p.exchange == Exchange::Kalshi)
+    }
 }
 
 impl Order {
