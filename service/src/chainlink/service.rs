@@ -1,28 +1,73 @@
+use std::str::FromStr;
 use std::sync::Arc;
 
+use anyhow::{Context, anyhow};
 use async_trait::async_trait;
+use chrono::DateTime;
 use futures::Stream;
 use lib::AppResult;
 use polymarket_client_sdk::{rtds::{ChainlinkPrice, Client}, ws::config::Config};
+use reqwest::Client as HttpClient;
+use rust_decimal::Decimal;
+use serde::Deserialize;
 
-use crate::{config::service::ConfigService, services::{ServiceFactory, ServiceProvider}};
+use crate::{chainlink::types::{ChainlinkResponse, ToChainlinkAsset, CHAINLINK_BTC_PRICE_FEED_ID}, config::service::ConfigService, services::{ServiceFactory, ServiceProvider}};
 
 pub struct ChainLinkService {
     client: Client,
+    http_client: HttpClient,
 }
 
 impl ChainLinkService {
     pub fn new() -> Self {
         let client = Client::default();
-        Self { client }
+        let http_client = HttpClient::new();
+        Self { client, http_client }
     }
     
-    
     // asset in form of btc/usd, eth/usd
-    pub fn stream_chainlink_prices(&self, asset: String) -> impl Stream<Item = Result<ChainlinkPrice, polymarket_client_sdk::error::Error>> {
-        let result = self.client.subscribe_chainlink_prices(Some(asset)).unwrap();
+    pub fn stream_chainlink_prices(&self, asset: impl ToChainlinkAsset) -> impl Stream<Item = Result<ChainlinkPrice, polymarket_client_sdk::error::Error>> {
+        let result = self.client.subscribe_chainlink_prices(Some(asset.to_chainlink_asset().to_string())).unwrap();
         
         result
+    }
+    
+    /// Fetches the last 15-minute candle open price from Chainlink Data Streams.
+    /// Returns (Price, UnixTimestamp).
+    pub async fn get_last_15min_open(&self) -> AppResult<(Decimal, i64)> {
+        let url = format!(
+            "https://data.chain.link/api/historical-timescale-stream-data?feedId={}&timeRange=1D",
+            CHAINLINK_BTC_PRICE_FEED_ID
+        );
+
+        let response = self.http_client
+            .get(&url)
+            .send()
+            .await
+            .context("Failed to send request to Chainlink API")?
+            .json::<ChainlinkResponse>()
+            .await
+            .context("Failed to deserialize Chainlink API response")?;
+
+        let last_node = response.data.mercury_history.nodes.last()
+            .ok_or_else(|| anyhow!("Chainlink API returned no data nodes"))?;
+
+        // 1. Parse Timestamp
+        // Format: "2026-01-20T22:00:00+00:00"
+        let dt = DateTime::parse_from_rfc3339(&last_node.time_bucket)
+            .context("Failed to parse Chainlink timestamp")?;
+        let timestamp = dt.timestamp();
+
+        // 2. Parse Price
+        // Value comes in as 18 decimals (Wei), e.g., "90176452620396700000000"
+        let raw_open = Decimal::from_str(&last_node.open)
+            .context("Failed to parse open price decimal")?;
+        
+        // Normalize: Divide by 10^18 to get USD value
+        let scale = Decimal::from(1_000_000_000_000_000_000_u64);
+        let price = raw_open / scale;
+
+        Ok((price, timestamp))
     }
 }
 

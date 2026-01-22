@@ -12,16 +12,11 @@ use serde_json::Value;
 use tracing::info;
 
 use crate::{
-    config::service::ConfigService,
-    market::{Hour1Symbols, Min15Symbols},
-    services::{ServiceFactory, ServiceProvider},
-    strategy::Order,
+    config::service::ConfigService, market::symbols::{Hour1Symbols, Min15Symbols}, services::{ServiceFactory, ServiceProvider}, strategy::Order
 };
 
 pub struct KalshiService {
     client: KalshiClient,
-    // Make public so we can access the underlying stream if needed,
-    // or keep private and expose a wrapper (preferred).
     pub ws_client: KalshiWebsocketClient,
 }
 
@@ -53,7 +48,7 @@ impl KalshiService {
         action: String, // buy or sell
         order: Order,
     ) -> AppResult<()> {
-        let contracts = order.contracts;
+        let contracts = order.shares;
         let price_cents = order.price_cents;
         let mut req = CreateOrderRequest {
             ticker,
@@ -106,7 +101,7 @@ impl KalshiService {
         &self,
         symbol: Min15Symbols,
     ) -> AppResult<GetEventResponse> {
-        let asset = symbol.to_string();
+        let asset = format!("{:?}", symbol);
         let now_utc = Utc::now();
         let now_ny = now_utc.with_timezone(&New_York);
 
@@ -140,7 +135,7 @@ impl KalshiService {
         &self,
         symbol: Hour1Symbols,
     ) -> AppResult<GetEventResponse> {
-        let asset = symbol.to_string();
+        let asset = format!("{:?}", symbol);
         let now_utc = Utc::now();
         let now_ny = now_utc.with_timezone(&New_York);
 
@@ -183,28 +178,12 @@ impl KalshiService {
             .await
             .context("Failed to subscribe to Kalshi WebSocket")
     }
-
-    // pub async fn subscribe_market_ticker(&self, ticker: String) -> AppResult<()> {
-    //     let key = vec!["ticker"];
-    //     let value = vec![ticker.as_str()];
-    //     self.ws_client
-    //         .subscribe(key, value)
-    //         .await
-    //         .context("Failed to subscribe to Kalshi WebSocket")
-    // }
-
+    
     pub async fn subscribe_fills(&self) -> AppResult<()> {
         let key = vec!["fill"];
         let value = vec![];
         self.ws_client
             .subscribe(key, value)
-            .await
-            .context("Failed to subscribe to Kalshi WebSocket")
-    }
-    
-    pub async fn get_market_orderbook(&self, ticker: String) -> AppResult<GetMarketOrderbookResponse> {
-        self.client
-            .get_market_orderbook(&ticker, None)
             .await
             .context("Failed to subscribe to Kalshi WebSocket")
     }

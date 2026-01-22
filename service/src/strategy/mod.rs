@@ -1,19 +1,23 @@
+pub mod arbitrage;
 pub mod book;
+pub mod events;
 pub mod handler;
 pub mod market;
+pub mod orderbook;
 
 use kalshi_rs::websocket::models::UserFillMessage;
 use polymarket_client_sdk::clob::ws::TradeMessage;
-use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
 use polymarket_client_sdk::types::U256;
+use rust_decimal::Decimal;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
-use crate::market::Exchange;
+use crate::market::exchange::Exchange;
 
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub price_cents: u32,
-    pub contracts: u32
+    pub price_cents: u32, // 47c
+    pub shares: u32,      // 1 shares.
+    // total cost 0.47$
 }
 
 #[derive(Debug)]
@@ -34,44 +38,49 @@ pub struct ArbSizing {
 #[derive(Debug, Clone)]
 pub struct Position {
     pub exchange: Exchange, // "polymarket" or "kalshi"
-    pub id: String,       // Token ID (Poly) or Ticker (Kalshi)
-    pub side: String,     // "buy"/"sell" or "yes"/"no"
-    pub quantity: Decimal, // EXACT amount held
-    pub price: Decimal,
+    pub id: String,         // Token ID (Poly) or Ticker (Kalshi)
+    pub side: String,       // "yes"/"no"
+    pub order: Order, // upate this
     pub timestamp: std::time::Instant,
 }
 
 #[derive(Debug, Clone)]
 pub struct PairedPosition {
-    pub positions: [Position; 2], 
+    pub positions: [Position; 2],
 }
 
 impl PairedPosition {
     pub fn new(poly: Position, kalshi: Position) -> Self {
         Self {
-            positions: [poly, kalshi]
+            positions: [poly, kalshi],
         }
     }
 
     pub fn get_poly(&self) -> Option<&Position> {
-        self.positions.iter().find(|p| p.exchange == Exchange::Polymarket)
+        self.positions
+            .iter()
+            .find(|p| p.exchange == Exchange::Polymarket)
     }
 
     pub fn get_kalshi(&self) -> Option<&Position> {
-        self.positions.iter().find(|p| p.exchange == Exchange::Kalshi)
+        self.positions
+            .iter()
+            .find(|p| p.exchange == Exchange::Kalshi)
     }
 }
 
 impl Order {
-    pub fn new(price_cents: u32, contracts: u32) -> Self {
+    pub fn new(price_cents: u32, shares: u32) -> Self {
         Order {
             price_cents,
-            contracts
+            shares,
         }
     }
 
-    pub fn price_usd(&self) -> f64 {
-        (self.price_cents as f64 / 100.0) * self.contracts as f64
+    pub fn price_usd(&self) -> Decimal {
+        let value = (self.price_cents as f64 / 100.0) * self.shares as f64;
+
+        Decimal::from_f64(value).unwrap()
     }
 }
 
@@ -79,7 +88,7 @@ impl ArbSizing {
     pub fn calculate(
         budget_usd: Decimal,
         poly_price_cents: u32,
-        kalshi_price_cents: u32
+        kalshi_price_cents: u32,
     ) -> Option<Self> {
         let budget_cents = (budget_usd * Decimal::from(100)).to_u32()?;
 
