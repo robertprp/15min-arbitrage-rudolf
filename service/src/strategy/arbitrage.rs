@@ -194,33 +194,33 @@ impl ArbitrageProcessor {
         info!("🚀 Firing Orders: Poly Buy {} @ {}, Kalshi Buy {} @ {}c", 
             quantity_dec, poly_limit_price, sizing.quantity, opp.kalshi_price_cents);
 
-        let (p_res, k_res) = tokio::join!(
-            exec_service.execute_order(poly_order),
-            self.kalshi.place_fok_order(
-                opp.kalshi_ticker.clone(),
-                opp.kalshi_side.clone(),
-                "buy".to_string(),
-                kalshi_order
-            )
-        );
+        // let (p_res, k_res) = tokio::join!(
+        //     exec_service.execute_order(poly_order),
+        //     self.kalshi.place_fok_order(
+        //         opp.kalshi_ticker.clone(),
+        //         opp.kalshi_side.clone(),
+        //         "buy".to_string(),
+        //         kalshi_order
+        //     )
+        // );
 
-        // 6. Handle Results
-        match (p_res, k_res) {
-            (Ok(poly_resp), Ok(_)) => {
-                info!("✅ ENTRY SUCCESSFUL: Poly TX: {:?}, Kalshi Filled", poly_resp.order_id);
-                *last_action = Instant::now(); // Update cooldown only on success attempt
-            }
-            (Err(e), Ok(_)) => {
-                error!("⚠️ PARTIAL FILL ERROR: Poly Failed ({:?}) but Kalshi Executed!", e);
-                // TODO: Implement emergency exit for Kalshi leg
-            }
-            (Ok(_), Err(e)) => {
-                error!("⚠️ PARTIAL FILL ERROR: Kalshi Failed ({:?}) but Poly Executed!", e);
-                // TODO: Implement emergency exit for Poly leg
-            }
-            (Err(ep), Err(ek)) => {
-                error!("❌ ENTRY FAILED: Poly: {:?}, Kalshi: {:?}", ep, ek);
-            }
-        }
+        // // 6. Handle Results
+        // match (p_res, k_res) {
+        //     (Ok(poly_resp), Ok(_)) => {
+        //         info!("✅ ENTRY SUCCESSFUL: Poly TX: {:?}, Kalshi Filled", poly_resp.order_id);
+        //         *last_action = Instant::now(); // Update cooldown only on success attempt
+        //     }
+        //     (Err(e), Ok(_)) => {
+        //         error!("⚠️ PARTIAL FILL ERROR: Poly Failed ({:?}) but Kalshi Executed!", e);
+        //         // TODO: Implement emergency exit for Kalshi leg
+        //     }
+        //     (Ok(_), Err(e)) => {
+        //         error!("⚠️ PARTIAL FILL ERROR: Kalshi Failed ({:?}) but Poly Executed!", e);
+        //         // TODO: Implement emergency exit for Poly leg
+        //     }
+        //     (Err(ep), Err(ek)) => {
+        //         error!("❌ ENTRY FAILED: Poly: {:?}, Kalshi: {:?}", ep, ek);
+        //     }
+        // }
     }
 }
