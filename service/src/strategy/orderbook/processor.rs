@@ -365,7 +365,7 @@ impl OrderbookProcessor {
     }
 
     fn apply_delta_to_book(
-        book: &mut Orderbook, // Direct mutable reference
+        book: &mut Orderbook, 
         is_bid: bool,
         price: Decimal,
         delta: Decimal,

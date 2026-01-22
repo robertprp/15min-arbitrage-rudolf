@@ -146,16 +146,18 @@ impl RiskLayer<ActionExit> {
         let unwind_secs = 45;
         if seconds_remaining < unwind_secs {
             if poly_dist_pct > pct_0_05 && kalshi_dist_pct > pct_0_05 {
-                info!(
-                    "🛡️ Risk Layer (Exit): Holding. < {} seconds left but price is safely away from strike (> 0.05%).",
-                    unwind_secs
-                );
+                // correct usage with the tracing crate
+                info!( "🛡️ Risk Layer (Exit): Holding. Price is safely away from strike.");
+                info!(%seconds_remaining, %poly_dist_pct, %kalshi_dist_pct, %poly_strike, %kalshi_strike, %poly_price, %kalshi_price);
+                
                 return false;
             } else {
                 info!(
                     "[ALERT] We should unwind. less than {} seconds left and price is within 0.05% of strike.",
-                    unwind_secs
+                    unwind_secs,
                 );
+                
+                info!(%seconds_remaining, %poly_dist_pct, %kalshi_dist_pct, %poly_strike, %kalshi_strike, %poly_price, %kalshi_price);
             }
         }
 

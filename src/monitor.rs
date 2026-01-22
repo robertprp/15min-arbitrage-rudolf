@@ -128,13 +128,9 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     )
     .await?;
 
-    // 4. Start Processors (Spawn Tasks)
-
-    // --- 🟢 FIX START: Spawn the Oracle ---
     tokio::spawn(async move {
         oracle.run().await;
     });
-    // --- 🟢 FIX END ---
 
     // Start Position Manager
     tokio::spawn(async move {
