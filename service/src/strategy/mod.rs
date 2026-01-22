@@ -10,7 +10,6 @@ pub mod risk;
 
 use kalshi_rs::websocket::models::UserFillMessage;
 use polymarket_client_sdk::clob::ws::TradeMessage;
-use polymarket_client_sdk::types::U256;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 

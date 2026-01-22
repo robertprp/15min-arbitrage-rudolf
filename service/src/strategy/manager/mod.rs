@@ -1,8 +1,6 @@
-use anyhow::Result;
-use rust_decimal::Decimal;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::kalshi::service::KalshiService;
 use crate::market::metadata::MarketMetadata;
@@ -42,16 +40,16 @@ impl PositionManager {
         // Initialize Exit Risk Layer
         let risk_layer = RiskLayer::new(poly_metadata, kalshi_metadata);
 
-        let manager = Self {
+        
+
+        Self {
             positions: Vec::new(),
             kalshi_service,
             risk_layer,
             manager_tx,
             manager_rx,
             oracle_rx,
-        };
-
-        manager
+        }
     }
 
     pub fn get_sender(&self) -> mpsc::Sender<PairedPosition> {

@@ -1,28 +1,28 @@
 use std::str::FromStr;
-use std::sync::Arc;
 
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
 use chrono::DateTime;
 use futures::Stream;
 use lib::AppResult;
-use polymarket_client_sdk::{
-    rtds::{ChainlinkPrice, Client},
-    ws::config::Config,
-};
+use polymarket_client_sdk::rtds::{ChainlinkPrice, Client};
 use reqwest::Client as HttpClient;
 use rust_decimal::Decimal;
-use serde::Deserialize;
 
 use crate::{
     chainlink::types::{CHAINLINK_BTC_PRICE_FEED_ID, ChainlinkResponse, ToChainlinkAsset},
-    config::service::ConfigService,
     services::{ServiceFactory, ServiceProvider},
 };
 
 pub struct ChainLinkService {
     client: Client,
     http_client: HttpClient,
+}
+
+impl Default for ChainLinkService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChainLinkService {
@@ -40,12 +40,12 @@ impl ChainLinkService {
         &self,
         asset: impl ToChainlinkAsset,
     ) -> impl Stream<Item = Result<ChainlinkPrice, polymarket_client_sdk::error::Error>> {
-        let result = self
+        
+
+        self
             .client
             .subscribe_chainlink_prices(Some(asset.to_chainlink_asset().to_string()))
-            .unwrap();
-
-        result
+            .unwrap()
     }
 
     /// Fetches the last 15-minute candle open price from Chainlink Data Streams.

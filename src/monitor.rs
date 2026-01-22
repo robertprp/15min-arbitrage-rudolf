@@ -1,5 +1,4 @@
 use std::str::FromStr;
-use std::time::Duration;
 
 use anyhow::Context;
 use futures::StreamExt;
@@ -69,8 +68,8 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         .ok_or_else(|| anyhow::anyhow!("No CLOB tokens found for Polymarket event"))?;
 
     let (asset_yes, asset_no) = (
-        pm_tokens.get(0).context("Missing Poly Asset 0")?.clone(),
-        pm_tokens.get(1).context("Missing Poly Asset 1")?.clone(),
+        *pm_tokens.first().context("Missing Poly Asset 0")?,
+        *pm_tokens.get(1).context("Missing Poly Asset 1")?,
     );
     let condition_id = pm_market.condition_id.context("Missing Condition ID")?;
 
@@ -108,8 +107,8 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
 
     let arbitrage_processor = ArbitrageProcessor::new(
         services.clone(),
-        asset_yes.clone(),
-        asset_no.clone(),
+        asset_yes,
+        asset_no,
         manager_tx,
     )
     .await?;
@@ -118,8 +117,8 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
 
     let orderbook_processor = OrderbookProcessor::new(
         services.clone(),
-        asset_yes.clone(),
-        asset_no.clone(),
+        asset_yes,
+        asset_no,
         pm_gamma.get_slug_by_symbol(symbol.clone()),
         kalshi_event_ticker.clone(),
         kalshi_market_ticker.clone(),

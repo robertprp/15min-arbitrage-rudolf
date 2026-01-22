@@ -1,18 +1,16 @@
 use std::sync::Arc;
 
-use anyhow::{Context, bail};
+use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{Timelike, Utc};
 use chrono_tz::America::New_York;
 use kalshi_rs::{
     Account, KalshiClient, KalshiWebsocketClient,
     events::models::GetEventResponse,
-    markets::models::GetMarketOrderbookResponse,
     portfolio::models::{CreateOrderRequest, CreateOrderResponse},
 };
 use lib::AppResult;
 use rust_decimal::{Decimal, prelude::FromPrimitive};
-use serde_json::Value;
 use tracing::info;
 
 use crate::{
@@ -107,7 +105,7 @@ impl KalshiService {
             req.no_price = Some(price_cents.into());
         }
 
-        if (action.eq("buy")) {
+        if action.eq("buy") {
             // TODO fix this bc maybe price_cents is less than 3.
             let cents = 2;
             if side.eq("yes") {

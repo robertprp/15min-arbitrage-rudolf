@@ -1,15 +1,11 @@
 use async_trait::async_trait;
 use chrono::{Datelike, Timelike};
 use chrono_tz::America::New_York;
-use hmac::digest::consts::U256;
 use lib::AppResult;
 use polymarket_client_sdk::gamma::{
     Client,
     types::{
-        request::{
-            EventByIdRequest, EventByIdRequestBuilder, EventsRequest, MarketByIdRequest,
-            MarketBySlugRequest,
-        },
+        request::MarketBySlugRequest,
         response::Market,
     },
 };
@@ -22,6 +18,12 @@ use crate::{
 
 pub struct PolymarketGammaService {
     client: Client,
+}
+
+impl Default for PolymarketGammaService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PolymarketGammaService {

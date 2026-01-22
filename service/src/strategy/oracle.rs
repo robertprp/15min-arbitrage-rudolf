@@ -1,12 +1,10 @@
-use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::Result;
 use futures::StreamExt;
 use rust_decimal::Decimal;
 use tokio::sync::broadcast;
 use tokio::time::interval;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::{
     chainlink::service::ChainLinkService, kalshi::service::KalshiService,
@@ -65,7 +63,7 @@ impl MarketDataOracle {
                 Some(res) = chainlink_stream.next() => {
                     match res {
                         Ok(cl_update) => {
-                            let price = Decimal::from(cl_update.value);
+                            let price = cl_update.value;
                             // Note: You might need to adjust scaling here based on the raw value
                             // For simplicity assuming Decimal handles it or mapped correctly in service
 
@@ -74,7 +72,7 @@ impl MarketDataOracle {
                                 timestamp: chrono::Utc::now().timestamp(),
                             };
 
-                            if let Err(_) = self.broadcaster.send(event) {
+                            if self.broadcaster.send(event).is_err() {
                                 // No receivers, not a critical error
                             }
                         }
@@ -90,7 +88,7 @@ impl MarketDataOracle {
                                 price,
                                 timestamp: ts,
                             };
-                            if let Err(_) = self.broadcaster.send(event) {
+                            if self.broadcaster.send(event).is_err() {
                                 // No receivers
                             }
                         }
