@@ -123,7 +123,6 @@ impl ArbitrageProcessor {
     }
 
     async fn process_opportunity(&self, opp: Opportunity) {
-        info!("Checking for opportunity.");
         let mut last_action = self.last_action.write().await;
         if last_action.elapsed() < self.cooldown {
             return;
