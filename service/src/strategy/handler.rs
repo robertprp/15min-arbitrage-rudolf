@@ -9,4 +9,3 @@ use crate::{
     market::exchange::Exchange,
     strategy::{FillEvent, PairedPosition},
 };
-

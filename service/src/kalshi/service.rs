@@ -96,7 +96,7 @@ impl KalshiService {
             post_only: Some(false),
             reduce_only: None,
             self_trade_prevention_type: None,
-            time_in_force: Some(String::from("fill_or_kill")),
+            time_in_force: Some(String::from("good_till_canceled")),
             yes_price: None,
             yes_price_dollars: None,
         };
@@ -107,19 +107,21 @@ impl KalshiService {
             req.no_price = Some(price_cents.into());
         }
 
-        // if (action.eq("buy")) {
-        //     // TODO fix this bc maybe price_cents is less than 3.
-        //     let cents = 2;
-        //     if side.eq("yes") {
-        //         // Reduce few cents yes_price to make sure we are filled
-        //         req.yes_price = Some((price_cents + cents).into());
-        //     } else {
-        //         // Reduce few cents no_price to make sure we are filled
-        //         req.no_price = Some((price_cents + cents).into());
-        //     }
-        // }
+        if (action.eq("buy")) {
+            // TODO fix this bc maybe price_cents is less than 3.
+            let cents = 2;
+            if side.eq("yes") {
+                // Reduce few cents yes_price to make sure we are filled
+                req.yes_price = Some((price_cents + cents).into());
+            } else {
+                // Reduce few cents no_price to make sure we are filled
+                req.no_price = Some((price_cents + cents).into());
+            }
+        }
 
-        self.client.create_order(&req).await
+        self.client
+            .create_order(&req)
+            .await
             .context("Failed to create kalshi order")
     }
 
@@ -199,7 +201,6 @@ impl KalshiService {
     pub async fn subscribe_orderbook(&self, market_ticker: String) -> AppResult<()> {
         let channels = vec!["orderbook_delta"];
 
-        // let market_id = self.get_market_id_by_market_ticker(symbol.clone(), market_ticker.clone()).await?;
         let markets = vec![market_ticker.as_str()];
 
         self.ws_client

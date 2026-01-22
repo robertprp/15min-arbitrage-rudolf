@@ -261,7 +261,7 @@ impl PolymarketExecutionService {
 
         let signable_order = SignableOrder::builder()
             .order(order)
-            .order_type(OrderType::FOK) // FOK is handled via execution options usually, but GTC is standard for constructed limit objects
+            .order_type(OrderType::GTC) // FOK is handled via execution options usually, but GTC is standard for constructed limit objects
             .post_only(false)
             .build();
 
