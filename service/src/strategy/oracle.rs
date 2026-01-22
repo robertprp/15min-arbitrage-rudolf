@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use futures::StreamExt;
-use rust_decimal::Decimal;
 use tokio::sync::broadcast;
 use tokio::time::interval;
 use tracing::{info, warn};
