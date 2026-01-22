@@ -26,8 +26,9 @@ pub struct Cli {
 pub enum Commands {
     /// Start the arbitrage
     Unified { symbol: Min15Symbols },
-    /// Monitor 15min BTC markets on both exchanges
-    Monitor {
+    /// Start the arbitrage
+    Arbitrage {
+        #[arg(long)]
         symbol: Min15Symbols,
         
         #[arg(long)]
@@ -64,7 +65,7 @@ impl Cli {
                 Ok(())
             }
             // Execute the new command
-            Commands::Monitor { min_edge, symbol } => {
+            Commands::Arbitrage { min_edge, symbol } => {
                 let params = RunMonitorParams {
                     services,
                     min_entry_edge_cents: min_edge,

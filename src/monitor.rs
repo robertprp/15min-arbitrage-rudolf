@@ -147,24 +147,27 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
             msg = kalshi.ws_client.next_message() => {
                 match msg {
                     Ok(KalshiSocketMessage::OrderbookDelta(delta)) => {
-                        // Forward Delta updates to the Orderbook Processor
-                        // The processor logic currently handles the Synthetic generation
-                        if let Err(e) = event_tx.send(OrderbookChangeEvent::Kalshi(delta.msg)).await {
+                        if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiDelta(delta.msg)).await {
                             error!("Failed to send Kalshi update to processor: {:?}", e);
                             break;
                         }
                     }
-                    Ok(KalshiSocketMessage::OrderbookSnapshot(_snapshot)) => {
-                        // TODO: Update OrderbookProcessor to handle Snapshots (Reset Book)
-                        // Currently ignored based on existing processor implementation
-                        info!("Received Kalshi Snapshot (Waiting for deltas...)");
+                    Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
+                        info!("📸 Received Kalshi Snapshot for ticker: {}", snapshot.msg.market_ticker);
+                        
+                        if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiSnapshot(snapshot.msg)).await {
+                            error!("Failed to send Kalshi snapshot to processor: {:?}", e);
+                            break;
+                        }
                     }
                     Err(e) => {
                         error!("Kalshi WS Error: {:?}", e);
                         // In production, trigger reconnection
                         break;
                     }
-                    _ => {} // Ignore other messages (e.g. KeepAlive)
+                    Ok(event) => {
+                        warn!("Unknown Kalshi WS Event: {:?}", event);
+                    } 
                 }
             }
         }

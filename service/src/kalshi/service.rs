@@ -20,6 +20,8 @@ pub struct KalshiService {
     pub ws_client: KalshiWebsocketClient,
 }
 
+const KALSHI_DATA_URL
+
 impl KalshiService {
     pub async fn new(config: Arc<ConfigService>) -> AppResult<Self> {
         let api_key_id = config.kalshi.api_key_id.clone();
