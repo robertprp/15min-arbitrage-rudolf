@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use lib::AppResult;
 use polymarket_client_sdk::clob::types::Side;
 use rust_decimal::Decimal;
@@ -11,6 +12,8 @@ use tokio::sync::{RwLock, broadcast, mpsc};
 use tokio::{select, task::JoinHandle};
 use tracing::{error, info, warn};
 
+use crate::market::exchange::Exchange;
+use crate::strategy::{PairedPosition, Position};
 use crate::{
     config::service::ConfigService,
     kalshi::service::KalshiService,
@@ -38,17 +41,14 @@ pub struct ArbitrageProcessor {
 
     config: ArbitrageProcessorConfig,
 
-    // Services for Execution
-    pm_clob: Arc<PolymarketClobService>,
     pm_exec_yes: Arc<PolymarketExecutionService>,
     pm_exec_no: Arc<PolymarketExecutionService>,
     kalshi: Arc<KalshiService>,
 
-    // Channels
     opportunity_rx: Arc<RwLock<Option<mpsc::Receiver<Opportunity>>>>,
     opportunity_tx: mpsc::Sender<Opportunity>,
 
-    shutdown_rx: Arc<RwLock<Option<broadcast::Receiver<()>>>>,
+    monitor_tx: mpsc::Sender<PairedPosition>,
 
     // State
     last_action: Arc<RwLock<Instant>>,
@@ -60,6 +60,7 @@ impl ArbitrageProcessor {
         services: ServiceProvider,
         poly_token_yes: polymarket_client_sdk::types::U256,
         poly_token_no: polymarket_client_sdk::types::U256,
+        monitor_tx: mpsc::Sender<PairedPosition>,
     ) -> Result<Self> {
         let (tx, rx) = mpsc::channel(100);
 
@@ -83,21 +84,15 @@ impl ArbitrageProcessor {
         Ok(Self {
             services,
             config,
-            pm_clob,
             pm_exec_yes,
             pm_exec_no,
             kalshi,
+            monitor_tx,
             opportunity_rx: Arc::new(RwLock::new(Some(rx))),
             opportunity_tx: tx,
-            shutdown_rx: Arc::new(RwLock::new(None)), // Should pass this in or init
             last_action: Arc::new(RwLock::new(Instant::now())),
             cooldown: Duration::from_secs(5),
         })
-    }
-
-    /// Set the shutdown receiver (call before start)
-    pub async fn set_shutdown_rx(&self, rx: broadcast::Receiver<()>) {
-        *self.shutdown_rx.write().await = Some(rx);
     }
 
     pub fn get_sender(&self) -> mpsc::Sender<Opportunity> {
@@ -112,33 +107,15 @@ impl ArbitrageProcessor {
             .take()
             .expect("Opportunity RX already taken");
 
-        // Handle optional shutdown rx gracefully
-        let mut shutdown_rx_opt = self.shutdown_rx.write().await.take();
-
         let processor = self.clone();
 
         tokio::spawn(async move {
             info!("⚡ ArbitrageProcessor started");
 
             loop {
-                if let Some(ref mut shutdown) = shutdown_rx_opt {
-                    select! {
-                        res = rx.recv() => {
-                            match res {
-                                Some(opp) => processor.process_opportunity(opp).await,
-                                None => break,
-                            }
-                        }
-                        _ = shutdown.recv() => {
-                            info!("⚡ ArbitrageProcessor shutdown signal");
-                            break;
-                        }
-                    }
-                } else {
-                    match rx.recv().await {
-                        Some(opp) => processor.process_opportunity(opp).await,
-                        None => break,
-                    }
+                match rx.recv().await {
+                    Some(opp) => processor.process_opportunity(opp).await,
+                    None => break,
                 }
             }
 
@@ -147,6 +124,7 @@ impl ArbitrageProcessor {
     }
 
     async fn process_opportunity(&self, opp: Opportunity) {
+        info!("Checking for opportunity.");
         let mut last_action = self.last_action.write().await;
         if last_action.elapsed() < self.cooldown {
             return;
@@ -214,15 +192,50 @@ impl ArbitrageProcessor {
         // 6. Handle Results
         match (p_res, k_res) {
             (Ok(poly_resp), Ok(kalshi_resp)) => {
-                info!("✅ ENTRY SUCCESSFUL: Poly TX: {:?}, Kalshi Filled", poly_resp.order_id);
-                *last_action = Instant::now(); // Update cooldown only on success attempt
+                info!(
+                    "✅ ENTRY SUCCESSFUL: Poly TX: {:?}, Kalshi Filled",
+                    poly_resp.order_id
+                );
+                *last_action = Instant::now();
+
+                let pm_side = if opp.poly_token_id == self.pm_exec_yes.token_id {
+                    "yes".to_string()
+                } else {
+                    "no".to_string()
+                };
+
+                let pm_position = Position {
+                    exchange: Exchange::Polymarket,
+                    order_id: poly_resp.order_id,
+                    side: pm_side,
+                    timestamp: Utc::now().timestamp(),
+                };
+
+                let ks_position = Position {
+                    exchange: Exchange::Kalshi,
+                    order_id: kalshi_resp.order.order_id,
+                    side: kalshi_resp.order.side,
+                    timestamp: Utc::now().timestamp(),
+                };
+
+                let paired_position = PairedPosition::new(pm_position, ks_position);
+
+                if let Err(e) = self.monitor_tx.send(paired_position).await {
+                    error!("⚠️ ERROR SENDING PAIRED POSITION: {:?}", e);
+                }
             }
             (Err(e), Ok(kalshi_resp)) => {
-                error!("⚠️ PARTIAL FILL ERROR: Poly Failed ({:?}) but Kalshi Executed!", e);
+                error!(
+                    "⚠️ PARTIAL FILL ERROR: Poly Failed ({:?}) but Kalshi Executed!",
+                    e
+                );
                 // TODO: Implement emergency exit for Kalshi leg
             }
             (Ok(poly_resp), Err(e)) => {
-                error!("⚠️ PARTIAL FILL ERROR: Kalshi Failed ({:?}) but Poly Executed!", e);
+                error!(
+                    "⚠️ PARTIAL FILL ERROR: Kalshi Failed ({:?}) but Poly Executed!",
+                    e
+                );
                 // TODO: Implement emergency exit for Poly leg
             }
             (Err(ep), Err(ek)) => {

@@ -6,7 +6,7 @@ use std::{str::FromStr, sync::Arc};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use futures::{StreamExt, stream::select_all}; // Ensure futures is imported
-use kalshi_rs::websocket::models::OrderbookSnapshotMessage;
+use kalshi_rs::websocket::models::{OrderbookDeltaMessage, OrderbookSnapshotMessage};
 use lib::AppResult;
 use polymarket_client_sdk::clob::ws::BestBidAsk;
 use polymarket_client_sdk::types::U256;
@@ -19,6 +19,7 @@ use tokio::{
 };
 use tracing::{error, info, warn};
 
+use crate::strategy::events::OracleUpdateEvent;
 use crate::strategy::risk::layer::{ActionEnter, ActionExit};
 use crate::{
     chainlink::service::ChainLinkService,
@@ -55,14 +56,13 @@ pub struct OrderbookProcessor {
     pub k_orderbook_yes: Orderbook,
     pub k_orderbook_no: Orderbook,
 
+    pub position_count: u32,
     // Channels
     event_rx: Option<mpsc::Receiver<OrderbookChangeEvent>>,
     event_tx: mpsc::Sender<OrderbookChangeEvent>,
 
     executor_tx: mpsc::Sender<Opportunity>,
-    
-    shutdown_rx: Option<broadcast::Receiver<()>>,
-    shutdown_tx: broadcast::Sender<()>,
+    oracle_rx: broadcast::Receiver<OracleUpdateEvent>, // Add this
 }
 
 impl OrderbookProcessor {
@@ -71,21 +71,20 @@ impl OrderbookProcessor {
         poly_yes_asset: U256,
         poly_no_asset: U256,
         poly_ticker: String,
-        kalshi_ticker: String,
+        kalshi_event_ticker: String,
+        kalshi_market_ticker: String,
         min_edge: Decimal,
         executor_tx: mpsc::Sender<Opportunity>,
+        oracle_rx: broadcast::Receiver<OracleUpdateEvent>,
     ) -> AppResult<Self> {
         let (event_tx, event_rx) = mpsc::channel(20_000);
-        let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
-
         let pm_gamma = services
             .get_service_unchecked::<PolymarketGammaService>()
             .await;
         let kalshi_service = services.get_service_unchecked::<KalshiService>().await;
         let chainlink_service = services.get_service_unchecked::<ChainLinkService>().await;
 
-        info!("Getting event of kalshi with ticker {}", &kalshi_ticker);
-        let k_market = kalshi_service.get_event(&kalshi_ticker).await?;
+        let k_market = kalshi_service.get_event(&kalshi_event_ticker).await?;
         let pm_market = pm_gamma.get_market_by_slug(&poly_ticker).await?;
 
         let (_timestamp, strike_price) = chainlink_service.get_last_15min_open().await?;
@@ -100,18 +99,18 @@ impl OrderbookProcessor {
             services,
             poly_yes_asset,
             poly_no_asset,
-            kalshi_ticker,
+            kalshi_ticker: kalshi_market_ticker,
             enter_risk_layer,
             min_edge,
             executor_tx,
+            position_count: 0,
             pm_orderbook_yes: Orderbook::new(),
             pm_orderbook_no: Orderbook::new(),
             k_orderbook_yes: Orderbook::new(),
             k_orderbook_no: Orderbook::new(),
             event_rx: Some(event_rx),
             event_tx,
-            shutdown_rx: Some(shutdown_rx),
-            shutdown_tx,
+            oracle_rx,
         };
 
         Ok(processor)
@@ -125,27 +124,9 @@ impl OrderbookProcessor {
     /// Consumes the processor and spawns the event loop
     pub fn start(mut self) -> JoinHandle<AppResult<()>> {
         let mut event_rx = self.event_rx.take().expect("Event RX already taken");
-        let mut shutdown_rx = self.shutdown_rx.take().expect("Shutdown RX already taken");
-
-        let services = self.services.clone();
-
-        // Use the symbol from metadata (assuming BTC for this example, logic can be made dynamic)
-        let symbol = self.enter_risk_layer.poly_metadata.symbol.clone();
 
         tokio::spawn(async move {
             info!("📘 OrderbookProcessor started");
-
-            // 1. Setup Chainlink Stream (Polymarket Underlying)
-            let chainlink_service = services.get_service_unchecked::<ChainLinkService>().await;
-            // Assuming we map symbol to ChainLinkAsset::BTCUSD or similar.
-            // In a real generic impl, pass the asset enum correctly.
-            let mut chainlink_stream = chainlink_service
-                .stream_chainlink_prices(symbol.clone())
-                .boxed();
-
-            // 2. Setup Kalshi Polling Interval (Every 1 second)
-            let kalshi_service = services.get_service_unchecked::<KalshiService>().await;
-            let mut kalshi_poll_interval = interval(Duration::from_secs(1));
 
             loop {
                 select! {
@@ -160,29 +141,15 @@ impl OrderbookProcessor {
                         }
                         }
 
-                        // --- Chainlink RTDS Updates (Polymarket Underlying) ---
-                        Some(Ok(cl_price_update)) = chainlink_stream.next() => {
-                            let price_decimal = Decimal::from(cl_price_update.value); // Example scaling
-
-                            self.enter_risk_layer.update_poly_price(price_decimal);
-                        }
-
-                        _ = kalshi_poll_interval.tick() => {
-                            // Poll Kalshi API
-                            match kalshi_service.get_last_traded_price(symbol.clone()).await {
-                                Ok((_ts, price)) => {
+                        Ok(oracle_msg) = self.oracle_rx.recv() => {
+                            match oracle_msg {
+                                OracleUpdateEvent::Polymarket { price, .. } => {
+                                    self.enter_risk_layer.update_poly_price(price);
+                                }
+                                OracleUpdateEvent::Kalshi { price, .. } => {
                                     self.enter_risk_layer.update_kalshi_price(price);
                                 }
-                                Err(e) => {
-                                    warn!("Failed to poll Kalshi price: {:?}", e);
-                                }
                             }
-                        }
-
-                        // --- Shutdown ---
-                        _ = shutdown_rx.recv() => {
-                            info!("🛑 OrderbookProcessor received shutdown signal");
-                            break;
                         }
                 }
             }
@@ -231,17 +198,26 @@ impl OrderbookProcessor {
                     timestamp: 0, //TODO
                 };
 
-                if self.enter_risk_layer.is_safe_to_enter(&opp) {
+                if self
+                    .enter_risk_layer
+                    .is_safe_to_enter(&opp, self.position_count)
+                {
                     info!(
                         "🚀 Arb Opportunity Found (A): Cost {} (P: {} + K_No: {})",
                         total_cost, p_ask, k_ask_no
                     );
                     if let Err(err) = self.executor_tx.send(opp).await {
                         error!("Failed to send opportunity: {}", err);
+                    } else {
+                        self.position_count += 1;
+
+                        return;
                     }
                 }
             }
-        } else if let (Some(p_ask), Some(k_ask_yes)) = (pm_no.best_ask(), k_yes.best_ask()) {
+        }
+
+        if let (Some(p_ask), Some(k_ask_yes)) = (pm_no.best_ask(), k_yes.best_ask()) {
             let total_cost = p_ask + k_ask_yes;
 
             if total_cost + self.min_edge < one {
@@ -257,14 +233,21 @@ impl OrderbookProcessor {
                 };
 
                 // RISKY CHECK
-                if self.enter_risk_layer.is_safe_to_enter(&opp) {
+                if self
+                    .enter_risk_layer
+                    .is_safe_to_enter(&opp, self.position_count)
+                {
                     info!(
                         "🚀 Arb Opportunity Found (B): Cost {} (P: {} + K_Yes: {})",
                         total_cost, p_ask, k_ask_yes
                     );
-                    
+
                     if let Err(err) = self.executor_tx.send(opp).await {
                         error!("Failed to send opportunity: {}", err);
+                    } else {
+                        self.position_count += 1;
+
+                        return;
                     }
                 }
             }
@@ -277,43 +260,28 @@ impl OrderbookProcessor {
         }
 
         let k_yes = &mut self.k_orderbook_yes;
-
         let k_no = &mut self.k_orderbook_no;
 
         // 1. Reset Books (Snapshot is the source of truth)
-
         k_yes.bids.clear();
-
         k_yes.asks.clear();
-
         k_no.bids.clear();
-
         k_no.asks.clear();
 
         let one = Decimal::from(1);
-
         let one_hundred = Decimal::from(100);
 
-        // "yes" in the snapshot = Bids on the Yes side
-
         let yes_bids = msg.yes.unwrap_or_default();
-
-        // "no" in the snapshot = Bids on the No side
-
         let no_bids = msg.no.unwrap_or_default();
-
-        // 2. Process YES Bids
 
         for (price_cents, qty) in yes_bids {
             let price = Decimal::from(price_cents) / one_hundred;
-
             let quantity = Decimal::from(qty);
 
             k_yes.update_bid(price, quantity);
 
             if price < one {
                 let inverted_price = one - price;
-
                 k_no.update_ask(inverted_price, quantity);
             }
         }
@@ -326,23 +294,14 @@ impl OrderbookProcessor {
 
             if price < one {
                 let inverted_price = one - price;
-
                 k_yes.update_ask(inverted_price, quantity);
             }
         }
 
         info!("✅ Kalshi Snapshot Processed.");
-
-        // Debug logs
-
-        if let Some(best_ask) = self.k_orderbook_yes.best_ask() {
-            info!("Updated Kalshi YES Best Ask: {}", best_ask);
-        }
     }
 
     async fn handle_polymarket_update(&mut self, update: BestBidAsk) {
-        // Determine which book to update
-
         let book = if update.asset_id == self.poly_yes_asset {
             &mut self.pm_orderbook_yes
         } else if update.asset_id == self.poly_no_asset {
@@ -351,10 +310,7 @@ impl OrderbookProcessor {
             return;
         };
 
-        // Direct mutable access
-
         book.bids.clear();
-
         book.asks.clear();
 
         if !update.best_bid.is_zero() {
@@ -366,22 +322,15 @@ impl OrderbookProcessor {
         }
     }
 
-    async fn handle_kalshi_update(
-        &mut self,
-        msg: kalshi_rs::websocket::models::OrderbookDeltaMessage,
-    ) {
+    async fn handle_kalshi_update(&mut self, msg: OrderbookDeltaMessage) {
         if msg.market_ticker != self.kalshi_ticker {
             return;
         }
 
         let one = Decimal::from(1);
-
         let one_hundred = Decimal::from(100);
-
         let price_cents = msg.price;
-
         let delta_qty = Decimal::from(msg.delta);
-
         let price = Decimal::from(price_cents) / one_hundred;
 
         match msg.side.as_str() {

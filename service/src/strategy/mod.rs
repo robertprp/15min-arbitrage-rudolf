@@ -4,6 +4,7 @@ pub mod events;
 pub mod handler;
 pub mod manager;
 pub mod market;
+pub mod oracle;
 pub mod orderbook;
 pub mod risk;
 
@@ -40,10 +41,9 @@ pub struct ArbSizing {
 #[derive(Debug, Clone)]
 pub struct Position {
     pub exchange: Exchange, // "polymarket" or "kalshi"
-    pub id: String,         // Token ID (Poly) or Ticker (Kalshi)
+    pub order_id: String,   // Token ID (Poly) or Ticker (Kalshi)
     pub side: String,       // "yes"/"no"
-    pub order: Order,       // upate this
-    pub timestamp: std::time::Instant,
+    pub timestamp: i64,
 }
 
 #[derive(Debug, Clone)]

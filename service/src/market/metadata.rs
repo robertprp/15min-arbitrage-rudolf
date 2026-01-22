@@ -66,7 +66,7 @@ impl MarketMetadata {
             Ok(Min15Symbols::BTC)
         } else if slug.starts_with("eth") {
             Ok(Min15Symbols::ETH)
-        }else {
+        } else {
             bail!("Unsupported Polymarket ticker in slug: {}", slug);
         }
     }

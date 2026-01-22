@@ -7,9 +7,10 @@ use kalshi_rs::websocket::models::KalshiSocketMessage;
 use lib::AppResult;
 use rust_decimal::Decimal;
 use service::{
+    chainlink::service::ChainLinkService,
     config::service::ConfigService,
     kalshi::service::KalshiService,
-    market::symbols::Min15Symbols,
+    market::{metadata::MarketMetadata, symbols::Min15Symbols},
     polymarket::{
         clob::PolymarketClobService,
         gamma::PolymarketGammaService,
@@ -17,7 +18,10 @@ use service::{
     },
     services::ServiceProvider,
     strategy::{
-        arbitrage::ArbitrageProcessor, events::OrderbookChangeEvent,
+        arbitrage::ArbitrageProcessor,
+        events::OrderbookChangeEvent,
+        manager::{PositionManager, PositionManagerParams},
+        oracle::MarketDataOracle,
         orderbook::processor::OrderbookProcessor,
     },
 };
@@ -30,8 +34,10 @@ pub struct RunMonitorParams {
 
 pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     info!("🚀 Initializing Monitor...");
-    let services = params.services;
+    let services = params.services.clone();
     let config_service = services.get_service_unchecked::<ConfigService>().await;
+
+    let chainlink_service = services.get_service_unchecked::<ChainLinkService>().await;
 
     // 1. Retrieve Services
     let pm_gamma = services
@@ -56,6 +62,7 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     let pm_market = pm_gamma
         .get_current_15min_market_by_symbol(symbol.clone())
         .await?;
+
     let pm_tokens = pm_market
         .clob_token_ids
         .as_ref()
@@ -71,40 +78,73 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     let kalshi_event = kalshi
         .get_current_15min_market_by_symbol(symbol.clone())
         .await?;
-    
-    let kalshi_ticker = kalshi_event.event.event_ticker.clone();
+
+    let kalshi_event_ticker = kalshi_event.event.event_ticker.clone();
+    let kalshi_market_ticker = kalshi_event.markets[0].ticker.clone();
 
     info!(
         "✅ Markets Found:\n  - Poly: {} (Yes: {}, No: {})\n  - Kalshi: {}",
-        pm_market.slug.unwrap_or_default(),
+        pm_market.slug.clone().unwrap_or_default(),
         asset_yes,
         asset_no,
-        kalshi_ticker
+        kalshi_event_ticker
     );
+
+    let (_ts, strike_price) = chainlink_service.get_last_15min_open().await?;
+    let pm_metadata = MarketMetadata::from_polymarket(pm_market.clone(), strike_price)?;
+    let kalshi_metadata = MarketMetadata::from_kalshi(kalshi_event)?;
+
+    let (oracle, arb_oracle_rx) = MarketDataOracle::new(services.clone(), symbol.clone());
+
+    let manager_oracle_rx = oracle.subscribe();
+
+    let manager = PositionManager::new(PositionManagerParams {
+        poly_metadata: pm_metadata,
+        kalshi_metadata,
+        kalshi_service: kalshi.clone(),
+        oracle_rx: manager_oracle_rx,
+    });
+    let manager_tx = manager.get_sender().clone();
 
     let arbitrage_processor = ArbitrageProcessor::new(
         services.clone(),
-        asset_yes.clone(), 
-        asset_no.clone(), 
+        asset_yes.clone(),
+        asset_no.clone(),
+        manager_tx,
     )
     .await?;
 
     let executor_tx = arbitrage_processor.get_sender().clone();
-    
+
     let orderbook_processor = OrderbookProcessor::new(
         services.clone(),
         asset_yes.clone(),
         asset_no.clone(),
         pm_gamma.get_slug_by_symbol(symbol.clone()),
-        kalshi_ticker.clone(),
+        kalshi_event_ticker.clone(),
+        kalshi_market_ticker.clone(),
         edge_decimal,
-        executor_tx
-    ).await?;
+        executor_tx,
+        arb_oracle_rx,
+    )
+    .await?;
 
     // 4. Start Processors (Spawn Tasks)
+
+    // --- 🟢 FIX START: Spawn the Oracle ---
+    tokio::spawn(async move {
+        oracle.run().await;
+    });
+    // --- 🟢 FIX END ---
+
+    // Start Position Manager
+    tokio::spawn(async move {
+        manager.start().await;
+    });
+
     let _arb_handle = arbitrage_processor.start().await;
     let event_tx = orderbook_processor.get_event_sender();
-    
+
     let _ob_handle = tokio::spawn(async move {
         if let Err(e) = orderbook_processor.start().await {
             error!("Orderbook Processor Error: {}", e);
@@ -120,9 +160,8 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         .subscribe_feed(vec![asset_yes, asset_no], vec![condition_id])?
         .boxed();
 
-    // Kalshi Subscription
-    // Subscribe to Orderbook Deltas (and potentially snapshots via channel logic if implemented)
-    kalshi.subscribe_orderbook(kalshi_ticker.clone()).await?;
+    kalshi.subscribe_orderbook(kalshi_market_ticker).await?;
+    kalshi.subscribe_fills().await?;
 
     info!("👂 Listening for Market Data...");
 
@@ -147,35 +186,32 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
                         // In a production bot, implement reconnection logic here
                     }
                 }
-            }
+                }
 
-            // --- Kalshi WebSocket Events ---
-            msg = kalshi.ws_client.next_message() => {
-                match msg {
-                    Ok(KalshiSocketMessage::OrderbookDelta(delta)) => {
-                        if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiDelta(delta.msg)).await {
-                            error!("Failed to send Kalshi update to processor: {:?}", e);
+                msg = kalshi.ws_client.next_message() => {
+                    match msg {
+                        Ok(KalshiSocketMessage::OrderbookDelta(delta)) => {
+                            if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiDelta(delta.msg)).await {
+                                error!("Failed to send Kalshi update to processor: {:?}", e);
+                                break;
+                            }
+                        }
+                        Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
+                            info!("📸 Received Kalshi Snapshot for ticker: {}", snapshot.msg.market_ticker);
+
+                            if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiSnapshot(snapshot.msg)).await {
+                                error!("Failed to send Kalshi snapshot to processor: {:?}", e);
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            error!("Kalshi WS Error: {:?}", e);
+                            // In production, trigger reconnection
                             break;
                         }
-                    }
-                    Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
-                        info!("📸 Received Kalshi Snapshot for ticker: {}", snapshot.msg.market_ticker);
-
-                        if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiSnapshot(snapshot.msg)).await {
-                            error!("Failed to send Kalshi snapshot to processor: {:?}", e);
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Kalshi WS Error: {:?}", e);
-                        // In production, trigger reconnection
-                        break;
-                    }
-                    Ok(event) => {
-                        warn!("Unknown Kalshi WS Event: {:?}", event);
+                        _ => {}
                     }
                 }
-            }
         }
     }
 

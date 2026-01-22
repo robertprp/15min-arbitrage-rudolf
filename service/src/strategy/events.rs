@@ -11,18 +11,25 @@ pub enum OrderbookChangeEvent {
     KalshiSnapshot(OrderbookSnapshotMessage),
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct PriceChange {
     pub timestamp_secs: u64,
     pub price: Decimal,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum PriceChangeEvent {
     Polymarket(PriceChange),
     Kalshi(PriceChange),
 }
 
+#[derive(Clone, Debug)]
 pub enum PositionUpdateEvent {
     Created(PairedPosition),
+}
+
+#[derive(Clone, Debug)]
+pub enum OracleUpdateEvent {
+    Polymarket { price: Decimal, timestamp: i64 },
+    Kalshi { price: Decimal, timestamp: i64 },
 }

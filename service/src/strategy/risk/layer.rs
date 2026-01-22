@@ -33,6 +33,7 @@ pub struct RiskLayer<Action> {
 
     // Config
     min_minutes_to_expiry: u32,
+    max_positions: u32,
 }
 
 // --- Common Implementation (Getters/Setters) ---
@@ -47,6 +48,7 @@ impl<A> RiskLayer<A> {
             last_kalshi_update: None,
             _marker: PhantomData,
             min_minutes_to_expiry: 2,
+            max_positions: 2,
         }
     }
 
@@ -61,10 +63,16 @@ impl<A> RiskLayer<A> {
     }
 
     fn has_fresh_data(&self) -> bool {
-        if self.last_poly_underlying_price.is_none() || self.last_kalshi_underlying_price.is_none() {
-            warn!("⚠️ Risk Layer: Missing underlying asset prices.");
+        if self.last_poly_underlying_price.is_none() {
+            warn!("⚠️ Risk Layer: Missing underlying asset prices for polymarket.");
             return false;
         }
+
+        if self.last_kalshi_underlying_price.is_none() {
+            warn!("⚠️ Risk Layer: Missing underlying asset prices for kalshi.");
+            return false;
+        }
+
         true
     }
 
@@ -76,16 +84,16 @@ impl<A> RiskLayer<A> {
 
         // Minutes passed in the current 15m window (0..14)
         let minutes_passed = current_minute % 15;
-        
+
         // Total seconds passed in this window
         let seconds_passed = (minutes_passed as i64 * 60) + current_second as i64;
-        
+
         // Total seconds in a 15m window = 900
         let total_window_seconds = 15 * 60;
 
         total_window_seconds - seconds_passed
     }
-    
+
     // Kept for ActionEnter compatibility
     fn get_minutes_remaining(&self) -> u32 {
         (self.get_seconds_remaining() / 60) as u32
@@ -94,15 +102,18 @@ impl<A> RiskLayer<A> {
 
 // --- Logic for ENTERING a position ---
 impl RiskLayer<ActionEnter> {
-    pub fn is_safe_to_enter(&self, _opp: &Opportunity) -> bool {
+    pub fn is_safe_to_enter(&self, _opp: &Opportunity, current_positions: u32) -> bool {
         if !self.has_fresh_data() {
             return false;
         }
 
         let minutes_remaining = self.get_minutes_remaining();
 
+        if current_positions >= self.max_positions {
+            return false;
+        }
+
         if minutes_remaining <= self.min_minutes_to_expiry {
-            warn!("⚠️ Risk Layer Reject (Enter): Too close to expiry ({} mins left).", minutes_remaining);
             return false;
         }
 
@@ -113,11 +124,11 @@ impl RiskLayer<ActionEnter> {
 impl RiskLayer<ActionExit> {
     pub fn should_unwind(&self) -> bool {
         if !self.has_fresh_data() {
-            return false; // Cannot make informed decision
+            return false;
         }
 
         let seconds_remaining = self.get_seconds_remaining();
-        
+
         let poly_price = self.last_poly_underlying_price.unwrap();
         let kalshi_price = self.last_kalshi_underlying_price.unwrap();
 
@@ -127,26 +138,25 @@ impl RiskLayer<ActionExit> {
         let poly_dist_pct = (poly_price - poly_strike).abs() / poly_strike;
         let kalshi_dist_pct = (kalshi_price - kalshi_strike).abs() / kalshi_strike;
 
+        // TODO: Think if we need to be more strict here.
+        // We should also check for last underlying price updated time on both.
         // Constants for thresholds
         let pct_0_1 = Decimal::new(1, 3); // 0.001 (0.1%)
         let pct_0_05 = Decimal::new(5, 4); // 0.0005 (0.05%)
 
-        if seconds_remaining < 30 {
-            if poly_dist_pct > pct_0_1 && kalshi_dist_pct > pct_0_1 {
-                info!("🛡️ Risk Layer (Exit): Holding. < 10s left but price is safely away from strike (> 0.1%).");
-                return false; 
-            }
-        }
-
-        // 2. DANGER ZONE: < 90 seconds (1.5 mins) AND Danger Distance (< 0.05%)
-        // If we are getting close to expiry and the price is coin-flipping, unwind.
-        if seconds_remaining < 90 {
-            // We check if the average distance suggests we are in the danger zone
-            let avg_dist_pct = (poly_dist_pct + kalshi_dist_pct) / Decimal::from(2);
-            
-            if avg_dist_pct < pct_0_05 {
-                warn!("🚨 Risk Layer (Exit): Unwinding! < 90s left and Price is within 0.05% of strike (Avg Dist: {}).", avg_dist_pct);
-                return true;
+        let unwind_secs = 45;
+        if seconds_remaining < unwind_secs {
+            if poly_dist_pct > pct_0_05 && kalshi_dist_pct > pct_0_05 {
+                info!(
+                    "🛡️ Risk Layer (Exit): Holding. < {} seconds left but price is safely away from strike (> 0.05%).",
+                    unwind_secs
+                );
+                return false;
+            } else {
+                info!(
+                    "[ALERT] We should unwind. less than {} seconds left and price is within 0.05% of strike.",
+                    unwind_secs
+                );
             }
         }
 
