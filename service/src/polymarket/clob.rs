@@ -3,8 +3,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use alloy::primitives::{Address, U256};
-use alloy::signers::{k256::ecdsa::SigningKey, local::LocalSigner, Signer};
-use anyhow::{bail, Context};
+use alloy::signers::{Signer, k256::ecdsa::SigningKey, local::LocalSigner};
+use anyhow::{Context, bail};
 use async_trait::async_trait;
 use polymarket_client_sdk::auth::Normal;
 use polymarket_client_sdk::clob::types::response::{
@@ -12,10 +12,10 @@ use polymarket_client_sdk::clob::types::response::{
 };
 use polymarket_client_sdk::clob::types::{Order, OrderType, Side, SignableOrder, SignatureType};
 use polymarket_client_sdk::{
+    POLYGON,
     auth::state::Authenticated,
     clob::{Client, Config},
     types::Decimal,
-    POLYGON,
 };
 use rand::Rng; // Ensure 'rand' is in your Cargo.toml
 use rust_decimal::prelude::ToPrimitive; // Ensure 'rust_decimal' is in your Cargo.toml
@@ -108,7 +108,7 @@ impl ServiceFactory for PolymarketClobService {
 
 pub struct PolymarketExecutionService {
     clob: Arc<PolymarketClobService>,
-    
+
     // Cached/Static Data
     pub token_id: U256,
     pub funder: Address,
@@ -126,7 +126,7 @@ impl PolymarketExecutionService {
         // 1. Fetch static data ONCE via the CLOB service
         let fee_rate = clob.get_fee_rate_bps(token_id.clone()).await?;
         let tick_data = clob.get_tick_size(token_id).await?;
-        
+
         let funder = Address::from_str(&config.polymarket.funder)?;
 
         Ok(Self {
@@ -180,10 +180,10 @@ impl PolymarketExecutionService {
         order.side = side as u8;
         order.feeRateBps = self.fee_rate_bps;
         // FOK/GTC usually doesn't strictly require sequential nonce management if salt is unique
-        order.nonce = U256::from(0); 
+        order.nonce = U256::from(0);
         // Use the address from the CLOB service signer
         order.signer = self.clob.signer.address();
-        order.expiration = U256::from(0); 
+        order.expiration = U256::from(0);
         order.signatureType = SignatureType::GnosisSafe as u8;
 
         let signable_order = SignableOrder::builder()
@@ -194,7 +194,7 @@ impl PolymarketExecutionService {
 
         Ok(signable_order)
     }
-    
+
     pub fn build_market_order(
         &self,
         raw_price: Decimal,
@@ -203,11 +203,11 @@ impl PolymarketExecutionService {
     ) -> AppResult<SignableOrder> {
         let decimals = self.tick_size_decimal.scale();
         let min_tick_size = self.tick_size_decimal;
-        
+
         // 1. Validate and Truncate Price
         // Ensure that the market price is truncated to our tick size
         let price = raw_price.trunc_with_scale(decimals);
-        
+
         if price < min_tick_size || price > Decimal::ONE - min_tick_size {
             anyhow::bail!(
                 "Price {} is too small or too large for the minimum tick size {}",
@@ -215,7 +215,7 @@ impl PolymarketExecutionService {
                 min_tick_size
             );
         }
-        
+
         // 2. Calculate Maker/Taker amounts
         // Logic adapted to assume 'size' is always SHARES for FOK orders.
         // If you need to support Buying with USDC amount, a logic branch is needed.
@@ -226,25 +226,25 @@ impl PolymarketExecutionService {
                 let usdc = (size * price).trunc_with_scale(decimals + LOT_SIZE_SCALE);
                 (size, usdc)
             }
-            
+
             // Sell N shares for USDC
             // Taker takes USDC, Maker gives SHARES
             Side::Sell => {
                 let usdc = (size * price).trunc_with_scale(decimals + LOT_SIZE_SCALE);
                 (usdc, size)
             }
-            
+
             _ => anyhow::bail!("Invalid side: {:?}", side),
         };
-        
+
         // 3. Generate Salt (IEEE 754 Safe Integer)
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap();
         let seconds = now.as_secs_f64();
         let rand = rand::random::<f64>();
         // Matches logic of `to_ieee_754_int`
         let raw_salt = (seconds * rand).round() as u64;
-        let salt = raw_salt & ((1 << 53) - 1); 
-        
+        let salt = raw_salt & ((1 << 53) - 1);
+
         let mut order = Order::default();
         order.salt = U256::from(salt);
         order.maker = self.funder;
@@ -254,27 +254,27 @@ impl PolymarketExecutionService {
         order.takerAmount = U256::from(Self::to_fixed_u128(taker_amount));
         order.side = side as u8;
         order.feeRateBps = self.fee_rate_bps;
-        order.nonce = U256::from(0); 
+        order.nonce = U256::from(0);
         order.signer = self.clob.signer.address();
-        order.expiration = U256::from(0); 
+        order.expiration = U256::from(0);
         order.signatureType = SignatureType::GnosisSafe as u8;
-        
+
         let signable_order = SignableOrder::builder()
             .order(order)
             .order_type(OrderType::FOK) // FOK is handled via execution options usually, but GTC is standard for constructed limit objects
             .post_only(false)
             .build();
-        
+
         Ok(signable_order)
     }
 
     pub async fn execute_order(&self, signable: SignableOrder) -> AppResult<PostOrderResponse> {
         // Sign using the cached signer in CLOB service
         let signed_order = self.clob.client.sign(&self.clob.signer, signable).await?;
-        
+
         // Post
         let response = self.clob.client.post_order(signed_order).await?;
-        
+
         if response.success {
             info!("Polymarket Post order response {:?}", response);
             Ok(response)

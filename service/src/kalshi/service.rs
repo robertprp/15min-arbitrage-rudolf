@@ -5,22 +5,27 @@ use async_trait::async_trait;
 use chrono::{Timelike, Utc};
 use chrono_tz::America::New_York;
 use kalshi_rs::{
-    events::models::GetEventResponse, markets::models::GetMarketOrderbookResponse, portfolio::models::CreateOrderRequest, Account, KalshiClient, KalshiWebsocketClient
+    Account, KalshiClient, KalshiWebsocketClient,
+    events::models::GetEventResponse,
+    markets::models::GetMarketOrderbookResponse,
+    portfolio::models::{CreateOrderRequest, CreateOrderResponse},
 };
 use lib::AppResult;
+use rust_decimal::{Decimal, prelude::FromPrimitive};
 use serde_json::Value;
 use tracing::info;
 
 use crate::{
-    config::service::ConfigService, market::symbols::{Hour1Symbols, Min15Symbols}, services::{ServiceFactory, ServiceProvider}, strategy::Order
+    config::service::ConfigService,
+    market::symbols::{Hour1Symbols, Min15Symbols},
+    services::{ServiceFactory, ServiceProvider},
+    strategy::Order,
 };
 
 pub struct KalshiService {
     client: KalshiClient,
     pub ws_client: KalshiWebsocketClient,
 }
-
-const KALSHI_DATA_URL
 
 impl KalshiService {
     pub async fn new(config: Arc<ConfigService>) -> AppResult<Self> {
@@ -43,13 +48,36 @@ impl KalshiService {
         Ok(Self { client, ws_client })
     }
 
-    pub async fn place_fok_order(
+    pub async fn get_last_traded_price(&self, symbol: Min15Symbols) -> AppResult<(i64, Decimal)> {
+        let symbol = format!("{:?}", symbol);
+        let url = format!(
+            "https://kalshi-public-docs.s3.amazonaws.com/external/crypto/{}_current.json?allowRequestEvenIfPageIsHidden=true",
+            symbol.to_lowercase()
+        );
+        let response = reqwest::get(&url).await?;
+        let data: serde_json::Value = response.json().await?;
+
+        let ts_ms = data["maturity_ts_ms"]
+            .as_i64()
+            .context("Invalid maturity_ts_ms data")?;
+        let value = data["candlesticks"]["15M"]["close"]
+            .as_f64()
+            .context("Invalid close value")?;
+
+        let ts_secs = ts_ms / 1000;
+
+        let price = Decimal::from_f64(value).context("Failed to convert value to Decimal")?;
+
+        Ok((ts_secs, price))
+    }
+
+    pub async fn place_market_order(
         &self,
         ticker: String,
         side: String,   // yes or no
         action: String, // buy or sell
         order: Order,
-    ) -> AppResult<()> {
+    ) -> AppResult<CreateOrderResponse> {
         let contracts = order.shares;
         let price_cents = order.price_cents;
         let mut req = CreateOrderRequest {
@@ -68,7 +96,7 @@ impl KalshiService {
             post_only: Some(false),
             reduce_only: None,
             self_trade_prevention_type: None,
-            time_in_force: Some(String::from("good_till_canceled")),
+            time_in_force: Some(String::from("fill_or_kill")),
             yes_price: None,
             yes_price_dollars: None,
         };
@@ -78,25 +106,21 @@ impl KalshiService {
         } else {
             req.no_price = Some(price_cents.into());
         }
-        
-        
-        if (action.eq("buy")) {
-            // TODO fix this bc maybe price_cents is less than 3.
-            let cents = 2;
-            if side.eq("yes") {
-                // Reduce few cents yes_price to make sure we are filled
-                req.yes_price = Some((price_cents + cents).into());
-            } else {
-                // Reduce few cents no_price to make sure we are filled
-                req.no_price = Some((price_cents + cents).into());
-            }
-        }
 
-        let response = self.client.create_order(&req).await?;
+        // if (action.eq("buy")) {
+        //     // TODO fix this bc maybe price_cents is less than 3.
+        //     let cents = 2;
+        //     if side.eq("yes") {
+        //         // Reduce few cents yes_price to make sure we are filled
+        //         req.yes_price = Some((price_cents + cents).into());
+        //     } else {
+        //         // Reduce few cents no_price to make sure we are filled
+        //         req.no_price = Some((price_cents + cents).into());
+        //     }
+        // }
 
-        info!("Kalshi Post order response {:?}", response.order);
-
-        Ok(())
+        self.client.create_order(&req).await
+            .context("Failed to create kalshi order")
     }
 
     pub async fn get_current_15min_market_by_symbol(
@@ -125,10 +149,13 @@ impl KalshiService {
         let timestamp_str = format!("{}{}{}", date_part, month_part, day_time_part);
         let ticker = format!("KX{}15M-{}", asset, timestamp_str);
 
-        info!("Kalshi ticker: {}", ticker);
+        info!("Kalshi ticker {}", &ticker);
+        self.get_event(&ticker).await
+    }
 
+    pub async fn get_event(&self, ticker: &str) -> AppResult<GetEventResponse> {
         self.client
-            .get_event(&ticker)
+            .get_event(ticker)
             .await
             .context("Failed to get event")
     }
@@ -171,16 +198,16 @@ impl KalshiService {
 
     pub async fn subscribe_orderbook(&self, market_ticker: String) -> AppResult<()> {
         let channels = vec!["orderbook_delta"];
-        
+
         // let market_id = self.get_market_id_by_market_ticker(symbol.clone(), market_ticker.clone()).await?;
         let markets = vec![market_ticker.as_str()];
-        
+
         self.ws_client
             .subscribe(channels, markets)
             .await
             .context("Failed to subscribe to Kalshi WebSocket")
     }
-    
+
     pub async fn subscribe_fills(&self) -> AppResult<()> {
         let key = vec!["fill"];
         let value = vec![];

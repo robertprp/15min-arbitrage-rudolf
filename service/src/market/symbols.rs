@@ -4,7 +4,7 @@ use clap::ValueEnum;
 pub enum Min15Symbols {
     BTC,
     ETH,
-    SOL,
+    // SOL,
     // XRP,
 }
 

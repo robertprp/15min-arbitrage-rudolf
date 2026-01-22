@@ -2,8 +2,10 @@ pub mod arbitrage;
 pub mod book;
 pub mod events;
 pub mod handler;
+pub mod manager;
 pub mod market;
 pub mod orderbook;
+pub mod risk;
 
 use kalshi_rs::websocket::models::UserFillMessage;
 use polymarket_client_sdk::clob::ws::TradeMessage;
@@ -17,7 +19,7 @@ use crate::market::exchange::Exchange;
 pub struct Order {
     pub price_cents: u32, // 47c
     pub shares: u32,      // 1 shares.
-    // total cost 0.47$
+                          // total cost 0.47$
 }
 
 #[derive(Debug)]
@@ -40,7 +42,7 @@ pub struct Position {
     pub exchange: Exchange, // "polymarket" or "kalshi"
     pub id: String,         // Token ID (Poly) or Ticker (Kalshi)
     pub side: String,       // "yes"/"no"
-    pub order: Order, // upate this
+    pub order: Order,       // upate this
     pub timestamp: std::time::Instant,
 }
 
