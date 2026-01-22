@@ -1,4 +1,3 @@
-
 use lib::AppResult;
 use service::telemetry;
 mod cli;

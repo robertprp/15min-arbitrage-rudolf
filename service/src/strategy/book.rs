@@ -1,12 +1,12 @@
-use std::collections::BTreeMap;
 use rust_decimal::Decimal;
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Default)]
 pub struct Orderbook {
     // Bids: Sorted by Price. Last element is highest price (Best Bid).
-    pub bids: BTreeMap<Decimal, Decimal>, 
+    pub bids: BTreeMap<Decimal, Decimal>,
     // Asks: Sorted by Price. First element is lowest price (Best Ask).
-    pub asks: BTreeMap<Decimal, Decimal>, 
+    pub asks: BTreeMap<Decimal, Decimal>,
 }
 
 impl Orderbook {
@@ -39,7 +39,7 @@ impl Orderbook {
     pub fn best_ask(&self) -> Option<Decimal> {
         self.asks.keys().next().cloned()
     }
-    
+
     pub fn is_arbitrage_possible(&self, ob: &Orderbook, edge: Decimal) -> bool {
         if let (Some(best_bid), Some(best_ask)) = (self.best_bid(), ob.best_ask()) {
             best_bid > best_ask + edge

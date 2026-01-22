@@ -1,0 +1,155 @@
+// File: service/src/strategy/risk/layer.rs
+
+use crate::market::metadata::MarketMetadata;
+use crate::strategy::market::Opportunity;
+use chrono::{DateTime, Timelike, Utc};
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
+use std::marker::PhantomData;
+use tracing::{info, warn};
+
+// --- Action Markers ---
+#[derive(Clone, Debug)]
+pub struct ActionEnter;
+
+#[derive(Clone, Debug)]
+pub struct ActionExit;
+
+#[derive(Debug, Clone)]
+pub struct RiskLayer<Action> {
+    // Static Metadata
+    pub poly_metadata: MarketMetadata,
+    pub kalshi_metadata: MarketMetadata,
+
+    // Dynamic State (Underlying Asset Prices)
+    pub last_poly_underlying_price: Option<Decimal>,
+    pub last_kalshi_underlying_price: Option<Decimal>,
+
+    pub last_poly_update: Option<DateTime<Utc>>,
+    pub last_kalshi_update: Option<DateTime<Utc>>,
+
+    // Marker for the generic state
+    pub _marker: PhantomData<Action>,
+
+    // Config
+    min_minutes_to_expiry: u32,
+}
+
+// --- Common Implementation (Getters/Setters) ---
+impl<A> RiskLayer<A> {
+    pub fn new(poly_metadata: MarketMetadata, kalshi_metadata: MarketMetadata) -> Self {
+        Self {
+            poly_metadata,
+            kalshi_metadata,
+            last_poly_underlying_price: None,
+            last_kalshi_underlying_price: None,
+            last_poly_update: None,
+            last_kalshi_update: None,
+            _marker: PhantomData,
+            min_minutes_to_expiry: 2,
+        }
+    }
+
+    pub fn update_poly_price(&mut self, price: Decimal) {
+        self.last_poly_underlying_price = Some(price);
+        self.last_poly_update = Some(Utc::now());
+    }
+
+    pub fn update_kalshi_price(&mut self, price: Decimal) {
+        self.last_kalshi_underlying_price = Some(price);
+        self.last_kalshi_update = Some(Utc::now());
+    }
+
+    fn has_fresh_data(&self) -> bool {
+        if self.last_poly_underlying_price.is_none() || self.last_kalshi_underlying_price.is_none() {
+            warn!("⚠️ Risk Layer: Missing underlying asset prices.");
+            return false;
+        }
+        true
+    }
+
+    /// Helper to get seconds remaining in the current 15-minute window
+    fn get_seconds_remaining(&self) -> i64 {
+        let now = Utc::now();
+        let current_minute = now.minute();
+        let current_second = now.second();
+
+        // Minutes passed in the current 15m window (0..14)
+        let minutes_passed = current_minute % 15;
+        
+        // Total seconds passed in this window
+        let seconds_passed = (minutes_passed as i64 * 60) + current_second as i64;
+        
+        // Total seconds in a 15m window = 900
+        let total_window_seconds = 15 * 60;
+
+        total_window_seconds - seconds_passed
+    }
+    
+    // Kept for ActionEnter compatibility
+    fn get_minutes_remaining(&self) -> u32 {
+        (self.get_seconds_remaining() / 60) as u32
+    }
+}
+
+// --- Logic for ENTERING a position ---
+impl RiskLayer<ActionEnter> {
+    pub fn is_safe_to_enter(&self, _opp: &Opportunity) -> bool {
+        if !self.has_fresh_data() {
+            return false;
+        }
+
+        let minutes_remaining = self.get_minutes_remaining();
+
+        if minutes_remaining <= self.min_minutes_to_expiry {
+            warn!("⚠️ Risk Layer Reject (Enter): Too close to expiry ({} mins left).", minutes_remaining);
+            return false;
+        }
+
+        true
+    }
+}
+
+impl RiskLayer<ActionExit> {
+    pub fn should_unwind(&self) -> bool {
+        if !self.has_fresh_data() {
+            return false; // Cannot make informed decision
+        }
+
+        let seconds_remaining = self.get_seconds_remaining();
+        
+        let poly_price = self.last_poly_underlying_price.unwrap();
+        let kalshi_price = self.last_kalshi_underlying_price.unwrap();
+
+        let poly_strike = self.poly_metadata.strike_price;
+        let kalshi_strike = self.kalshi_metadata.strike_price;
+
+        let poly_dist_pct = (poly_price - poly_strike).abs() / poly_strike;
+        let kalshi_dist_pct = (kalshi_price - kalshi_strike).abs() / kalshi_strike;
+
+        // Constants for thresholds
+        let pct_0_1 = Decimal::new(1, 3); // 0.001 (0.1%)
+        let pct_0_05 = Decimal::new(5, 4); // 0.0005 (0.05%)
+
+        if seconds_remaining < 30 {
+            if poly_dist_pct > pct_0_1 && kalshi_dist_pct > pct_0_1 {
+                info!("🛡️ Risk Layer (Exit): Holding. < 10s left but price is safely away from strike (> 0.1%).");
+                return false; 
+            }
+        }
+
+        // 2. DANGER ZONE: < 90 seconds (1.5 mins) AND Danger Distance (< 0.05%)
+        // If we are getting close to expiry and the price is coin-flipping, unwind.
+        if seconds_remaining < 90 {
+            // We check if the average distance suggests we are in the danger zone
+            let avg_dist_pct = (poly_dist_pct + kalshi_dist_pct) / Decimal::from(2);
+            
+            if avg_dist_pct < pct_0_05 {
+                warn!("🚨 Risk Layer (Exit): Unwinding! < 90s left and Price is within 0.05% of strike (Avg Dist: {}).", avg_dist_pct);
+                return true;
+            }
+        }
+
+        false
+    }
+}

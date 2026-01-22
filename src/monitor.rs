@@ -17,8 +17,7 @@ use service::{
     },
     services::ServiceProvider,
     strategy::{
-        arbitrage::ArbitrageProcessor,
-        events::OrderbookChangeEvent,
+        arbitrage::ArbitrageProcessor, events::OrderbookChangeEvent,
         orderbook::processor::OrderbookProcessor,
     },
 };
@@ -32,13 +31,19 @@ pub struct RunMonitorParams {
 pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     info!("🚀 Initializing Monitor...");
     let services = params.services;
+    let config_service = services.get_service_unchecked::<ConfigService>().await;
 
     // 1. Retrieve Services
-    let pm_gamma = services.get_service_unchecked::<PolymarketGammaService>().await;
-    let pm_ws = services.get_service_unchecked::<PolymarketWebSocketService>().await;
-    let pm_clob = services.get_service_unchecked::<PolymarketClobService>().await;
+    let pm_gamma = services
+        .get_service_unchecked::<PolymarketGammaService>()
+        .await;
+    let pm_ws = services
+        .get_service_unchecked::<PolymarketWebSocketService>()
+        .await;
+    let pm_clob = services
+        .get_service_unchecked::<PolymarketClobService>()
+        .await;
     let kalshi = services.get_service_unchecked::<KalshiService>().await;
-    let config_service = services.get_service_unchecked::<ConfigService>().await;
 
     // 2. Configuration & Market Discovery
     let symbol = Min15Symbols::BTC;
@@ -55,7 +60,7 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         .clob_token_ids
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("No CLOB tokens found for Polymarket event"))?;
-    
+
     let (asset_yes, asset_no) = (
         pm_tokens.get(0).context("Missing Poly Asset 0")?.clone(),
         pm_tokens.get(1).context("Missing Poly Asset 1")?.clone(),
@@ -66,7 +71,8 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     let kalshi_event = kalshi
         .get_current_15min_market_by_symbol(symbol.clone())
         .await?;
-    let kalshi_ticker = kalshi_event.markets[0].ticker.clone();
+    
+    let kalshi_ticker = kalshi_event.event.event_ticker.clone();
 
     info!(
         "✅ Markets Found:\n  - Poly: {} (Yes: {}, No: {})\n  - Kalshi: {}",
@@ -76,42 +82,42 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         kalshi_ticker
     );
 
-    // 3. Initialize Processors
-    
-    // A. Arbitrage Processor (Handles Execution)
-    // We pass the token IDs so it knows how to map opportunities to execution services
     let arbitrage_processor = ArbitrageProcessor::new(
         services.clone(),
-        asset_yes.clone(), // Convert String to U256
-        asset_no.clone(),  // Convert String to U256
-    ).await?;
+        asset_yes.clone(), 
+        asset_no.clone(), 
+    )
+    .await?;
+
+    let executor_tx = arbitrage_processor.get_sender().clone();
     
-    // B. Orderbook Processor (Handles State & Signal Detection)
-    // Note: In a complete setup, you would pass `arbitrage_processor.get_sender()` 
-    // into the OrderbookProcessor so it can emit signals to it.
     let orderbook_processor = OrderbookProcessor::new(
         services.clone(),
         asset_yes.clone(),
         asset_no.clone(),
+        pm_gamma.get_slug_by_symbol(symbol.clone()),
         kalshi_ticker.clone(),
         edge_decimal,
-    );
+        executor_tx
+    ).await?;
 
     // 4. Start Processors (Spawn Tasks)
     let _arb_handle = arbitrage_processor.start().await;
-    let _ob_handle = orderbook_processor.start().await;
-    
-    // Channel to feed data into the Orderbook Processor
     let event_tx = orderbook_processor.get_event_sender();
+    
+    let _ob_handle = tokio::spawn(async move {
+        if let Err(e) = orderbook_processor.start().await {
+            error!("Orderbook Processor Error: {}", e);
+        }
+    });
+
+    // Channel to feed data into the Orderbook Processor
 
     // 5. Subscribe to Data Streams
 
     // Polymarket Subscription
     let mut pm_stream = pm_ws
-        .subscribe_feed(
-            vec![asset_yes, asset_no],
-            vec![condition_id],
-        )?
+        .subscribe_feed(vec![asset_yes, asset_no], vec![condition_id])?
         .boxed();
 
     // Kalshi Subscription
@@ -154,7 +160,7 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
                     }
                     Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
                         info!("📸 Received Kalshi Snapshot for ticker: {}", snapshot.msg.market_ticker);
-                        
+
                         if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiSnapshot(snapshot.msg)).await {
                             error!("Failed to send Kalshi snapshot to processor: {:?}", e);
                             break;
@@ -167,7 +173,7 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
                     }
                     Ok(event) => {
                         warn!("Unknown Kalshi WS Event: {:?}", event);
-                    } 
+                    }
                 }
             }
         }
