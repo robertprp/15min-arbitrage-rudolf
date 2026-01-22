@@ -17,9 +17,9 @@ use polymarket_client_sdk::{
     clob::{Client, Config},
     types::Decimal,
 };
-use rand::Rng; // Ensure 'rand' is in your Cargo.toml
+ // Ensure 'rand' is in your Cargo.toml
 use rust_decimal::prelude::ToPrimitive; // Ensure 'rust_decimal' is in your Cargo.toml
-use tracing::{debug, info};
+use tracing::info;
 
 use crate::{
     config::service::ConfigService,
@@ -124,7 +124,7 @@ impl PolymarketExecutionService {
         token_id: U256,
     ) -> AppResult<Self> {
         // 1. Fetch static data ONCE via the CLOB service
-        let fee_rate = clob.get_fee_rate_bps(token_id.clone()).await?;
+        let fee_rate = clob.get_fee_rate_bps(token_id).await?;
         let tick_data = clob.get_tick_size(token_id).await?;
 
         let funder = Address::from_str(&config.polymarket.funder)?;

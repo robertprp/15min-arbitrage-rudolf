@@ -1,16 +1,11 @@
-use std::{ops::Div, path::Path, str::FromStr};
 
-use chrono::{DateTime, Utc};
 use clap::{Parser, Subcommand};
 use lib::AppResult;
-use rust_decimal::{Decimal, MathematicalOps, prelude::ToPrimitive};
 use service::{
     chainlink::service::ChainLinkService, config::service::ConfigService,
     kalshi::service::KalshiService, market::symbols::Min15Symbols,
     polymarket::gamma::PolymarketGammaService, services::ServiceProvider,
 };
-use tokio::join;
-use tracing::{info, warn};
 
 use crate::monitor::{RunMonitorParams, run_monitor};
 

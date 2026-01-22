@@ -4,7 +4,6 @@ use crate::market::metadata::MarketMetadata;
 use crate::strategy::market::Opportunity;
 use chrono::{DateTime, Timelike, Utc};
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
 use std::marker::PhantomData;
 use tracing::{info, warn};
 

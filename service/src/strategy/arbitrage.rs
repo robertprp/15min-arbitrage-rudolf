@@ -1,15 +1,14 @@
-use std::str::FromStr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
-use chrono::{DateTime, Utc};
+use anyhow::Result;
+use chrono::Utc;
 use lib::AppResult;
 use polymarket_client_sdk::clob::types::Side;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
-use tokio::sync::{RwLock, broadcast, mpsc};
-use tokio::{select, task::JoinHandle};
+use tokio::sync::{RwLock, mpsc};
+use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 use crate::market::exchange::Exchange;
@@ -18,7 +17,7 @@ use crate::{
     config::service::ConfigService,
     kalshi::service::KalshiService,
     polymarket::clob::{PolymarketClobService, PolymarketExecutionService},
-    services::{ServiceFactory, ServiceProvider},
+    services::ServiceProvider,
     strategy::{ArbSizing, Order, market::Opportunity},
 };
 

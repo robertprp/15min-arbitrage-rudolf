@@ -1,11 +1,7 @@
 // File: service/src/strategy/orderbook/processor.rs
 
-use std::time::Duration;
-use std::{str::FromStr, sync::Arc};
 
-use anyhow::Context;
-use chrono::{DateTime, Utc};
-use futures::{StreamExt, stream::select_all}; // Ensure futures is imported
+use futures::StreamExt; // Ensure futures is imported
 use kalshi_rs::websocket::models::{OrderbookDeltaMessage, OrderbookSnapshotMessage};
 use lib::AppResult;
 use polymarket_client_sdk::clob::ws::BestBidAsk;
@@ -14,23 +10,21 @@ use rust_decimal::Decimal;
 use tokio::{
     select,
     sync::{broadcast, mpsc},
-    task::JoinHandle,
-    time::interval, // Import interval
+    task::JoinHandle, // Import interval
 };
 use tracing::{error, info, warn};
 
 use crate::strategy::events::OracleUpdateEvent;
-use crate::strategy::risk::layer::{ActionEnter, ActionExit};
+use crate::strategy::risk::layer::ActionEnter;
 use crate::{
-    chainlink::service::ChainLinkService,
-    chainlink::types::ChainLinkAsset, // Ensure this enum is available
+    chainlink::service::ChainLinkService, // Ensure this enum is available
     kalshi::service::KalshiService,
     market::metadata::MarketMetadata,
     polymarket::gamma::PolymarketGammaService,
-    services::{ServiceFactory, ServiceProvider},
+    services::ServiceProvider,
     strategy::{
         book::Orderbook,
-        events::{OrderbookChangeEvent, PriceChangeEvent},
+        events::OrderbookChangeEvent,
         market::Opportunity,
         risk::layer::RiskLayer, // Import the new RiskLayer
     },
@@ -246,8 +240,6 @@ impl OrderbookProcessor {
                         error!("Failed to send opportunity: {}", err);
                     } else {
                         self.position_count += 1;
-
-                        return;
                     }
                 }
             }

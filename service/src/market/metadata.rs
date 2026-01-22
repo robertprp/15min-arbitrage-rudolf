@@ -3,8 +3,6 @@ use kalshi_rs::events::models::GetEventResponse;
 use lib::AppResult;
 use polymarket_client_sdk::gamma::types::response::Market;
 use rust_decimal::{Decimal, prelude::FromPrimitive};
-use std::str::FromStr;
-use tracing::info;
 
 use crate::market::{exchange::Exchange, symbols::Min15Symbols};
 

@@ -1,11 +1,10 @@
 use anyhow::Context;
 use async_trait::async_trait;
-use buildstructor::Builder;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lib::AppResult;
 use polymarket_client_sdk::{
     auth::{Credentials, Normal, state::Authenticated},
-    clob::ws::{BestBidAsk, Client, OrderMessage, TradeMessage},
+    clob::ws::{BestBidAsk, Client, TradeMessage},
     types::{Address, B256, U256},
 };
 use std::str::FromStr;
