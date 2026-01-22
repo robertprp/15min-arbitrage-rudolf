@@ -39,4 +39,12 @@ impl Orderbook {
     pub fn best_ask(&self) -> Option<Decimal> {
         self.asks.keys().next().cloned()
     }
+    
+    pub fn is_arbitrage_possible(&self, ob: &Orderbook, edge: Decimal) -> bool {
+        if let (Some(best_bid), Some(best_ask)) = (self.best_bid(), ob.best_ask()) {
+            best_bid > best_ask + edge
+        } else {
+            false
+        }
+    }
 }

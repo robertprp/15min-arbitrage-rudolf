@@ -5,7 +5,7 @@ use polymarket_client_sdk::gamma::{types::{request::{EventByIdRequest, EventById
 use chrono::{Datelike, Timelike};
 use chrono_tz::America::New_York;
 
-use crate::{market::{Hour1Symbols, Min15Symbols}, services::{ServiceFactory, ServiceProvider}};
+use crate::{market::symbols::{Hour1Symbols, Min15Symbols}, services::{ServiceFactory, ServiceProvider}, utils::get_floored_15min_timestamp};
 
 pub struct PolymarketGammaService {
     client: Client
@@ -18,16 +18,12 @@ impl PolymarketGammaService {
         Self { client }
     }
     
-    fn get_floored_15min_timestamp(timestamp: i64) -> i64 {
-        const WINDOW_SECONDS: i64 = 15 * 60; // 900 seconds
-        (timestamp / WINDOW_SECONDS) * WINDOW_SECONDS
-    }
-    
     pub async fn get_current_15min_market_by_symbol(&self, symbol: Min15Symbols) -> AppResult<Market> {
         let now = chrono::Utc::now();
         let current_ts = now.timestamp();
-        let floored_ts = Self::get_floored_15min_timestamp(current_ts);
-        let market_slug = format!("{}-updown-15m-{}", symbol.to_string().to_lowercase(), floored_ts);
+        let floored_ts = get_floored_15min_timestamp(current_ts);
+        let value = format!{"{:?}", symbol};
+        let market_slug = format!("{}-updown-15m-{}", value.to_lowercase(), floored_ts);
         
         let market = self.client.market_by_slug(&MarketBySlugRequest::builder().slug(market_slug).build()).await?;
         
