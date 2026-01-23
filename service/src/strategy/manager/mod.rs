@@ -3,7 +3,6 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::Context;
 use polymarket_client_sdk::clob::types::Side;
 use polymarket_client_sdk::types::U256;
 use rust_decimal::Decimal;
@@ -177,7 +176,7 @@ impl PositionManager {
         // 4. Build Orders
         let quantity_dec = Decimal::from(sizing.quantity);
         
-        // Aggressive limit price for Poly
+        // Check for this, if we should do this or use FOK orders?
         let poly_limit_price = opp.poly_price + Decimal::from_str("0.02").unwrap_or_default();
 
         info!("Buying Poly at price {} and amount of shares {}", poly_limit_price, quantity_dec);

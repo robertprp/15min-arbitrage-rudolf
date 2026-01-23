@@ -1,7 +1,6 @@
 // File: service/src/strategy/orderbook/processor.rs
 
-
-use futures::StreamExt; // Ensure futures is imported
+use futures::StreamExt;
 use kalshi_rs::websocket::models::{OrderbookDeltaMessage, OrderbookSnapshotMessage};
 use lib::AppResult;
 use polymarket_client_sdk::clob::ws::BestBidAsk;
@@ -10,14 +9,16 @@ use rust_decimal::Decimal;
 use tokio::{
     select,
     sync::{broadcast, mpsc},
-    task::JoinHandle, // Import interval
+    task::JoinHandle,
 };
 use tracing::{error, info, warn};
+// 1. IMPORT TIME MODULES
+use std::time::{Duration, Instant}; 
 
 use crate::{market::exchange::{KalshiExchange, PolymarketExchange}, strategy::{events::OracleUpdateEvent, state::MarketState}};
 use crate::strategy::risk::layer::ActionEnter;
 use crate::{
-    chainlink::service::ChainLinkService, // Ensure this enum is available
+    chainlink::service::ChainLinkService,
     kalshi::service::KalshiService,
     market::metadata::MarketMetadata,
     polymarket::gamma::PolymarketGammaService,
@@ -26,7 +27,7 @@ use crate::{
         book::Orderbook,
         events::OrderbookChangeEvent,
         market::Opportunity,
-        risk::layer::RiskLayer, // Import the new RiskLayer
+        risk::layer::RiskLayer,
     },
 };
 use rust_decimal::prelude::ToPrimitive;
@@ -35,24 +36,29 @@ pub struct OrderbookProcessor {
     pub services: ServiceProvider,
 
     // Market Identifiers for Routing
-    poly_yes_asset: U256,
-    poly_no_asset: U256,
-    kalshi_ticker: String,
+    pub poly_yes_asset: U256,
+    pub poly_no_asset: U256,
+    pub kalshi_ticker: String,
 
-    min_edge: Decimal,
+    pub min_edge: Decimal,
 
     // -- Risk Management --
-    enter_risk_layer: RiskLayer<ActionEnter>,
+    pub enter_risk_layer: RiskLayer<ActionEnter>,
 
     pub market_state: MarketState,
 
     pub position_count: u32,
+    
+    // 2. ADD COOLDOWN FIELDS
+    pub last_trigger_time: Instant, 
+    pub trigger_cooldown: Duration,
+
     // Channels
     event_rx: mpsc::Receiver<OrderbookChangeEvent>,
     event_tx: mpsc::Sender<OrderbookChangeEvent>,
 
     executor_tx: mpsc::Sender<Opportunity>,
-    oracle_rx: broadcast::Receiver<OracleUpdateEvent>, // Add this
+    oracle_rx: broadcast::Receiver<OracleUpdateEvent>,
 }
 
 impl OrderbookProcessor {
@@ -73,15 +79,12 @@ impl OrderbookProcessor {
             .get_service_unchecked::<PolymarketGammaService>()
             .await;
         let kalshi_service = services.get_service_unchecked::<KalshiService>().await;
-        let chainlink_service = services.get_service_unchecked::<ChainLinkService>().await;
 
         let k_market = kalshi_service.get_event(&kalshi_event_ticker).await?;
         let pm_market = pm_gamma.get_market_by_slug(&poly_ticker).await?;
 
-        let (_timestamp, strike_price) = chainlink_service.get_last_15min_open().await?;
-
-        let k_metadata: MarketMetadata<KalshiExchange> = MarketMetadata::new_kalshi(k_market)?;
-        let pm_metadata: MarketMetadata<PolymarketExchange> = MarketMetadata::new_poly(pm_market, strike_price)?;
+        let k_metadata: MarketMetadata<KalshiExchange> = MarketMetadata::new_kalshi(k_market).await?;
+        let pm_metadata: MarketMetadata<PolymarketExchange> = MarketMetadata::new_poly(pm_market).await?;
 
         // Initialize Risk Layers
         let enter_risk_layer = RiskLayer::new(pm_metadata.clone(), k_metadata.clone());
@@ -99,23 +102,22 @@ impl OrderbookProcessor {
             event_rx,
             event_tx,
             oracle_rx,
+            last_trigger_time: Instant::now() - Duration::from_secs(2),
+            trigger_cooldown: Duration::from_millis(1500), // 500ms block is enough to stop double taps
         };
 
         Ok(processor)
     }
 
-    /// Returns a sender to push events into this processor
     pub fn get_event_sender(&self) -> mpsc::Sender<OrderbookChangeEvent> {
         self.event_tx.clone()
     }
 
-    /// Consumes the processor and spawns the event loop
     pub async fn start(&mut self) -> AppResult<()> {
         info!("📘 OrderbookProcessor started");
 
         loop {
             select! {
-                // --- Internal Orderbook Events ---
                 event = self.event_rx.recv() => {
                     match event {
                         Some(change) => self.handle_event(change).await,
@@ -124,18 +126,18 @@ impl OrderbookProcessor {
                             break;
                         }
                     }
-                    }
+                }
 
-                    Ok(oracle_msg) = self.oracle_rx.recv() => {
-                        match oracle_msg {
-                            OracleUpdateEvent::Polymarket { price, .. } => {
-                                self.enter_risk_layer.update_poly_price(price);
-                            }
-                            OracleUpdateEvent::Kalshi { price, .. } => {
-                                self.enter_risk_layer.update_kalshi_price(price);
-                            }
+                Ok(oracle_msg) = self.oracle_rx.recv() => {
+                    match oracle_msg {
+                        OracleUpdateEvent::Polymarket { price, .. } => {
+                            self.enter_risk_layer.update_poly_price(price);
+                        }
+                        OracleUpdateEvent::Kalshi { price, .. } => {
+                            self.enter_risk_layer.update_kalshi_price(price);
                         }
                     }
+                }
             }
         }
 
@@ -155,6 +157,11 @@ impl OrderbookProcessor {
     }
 
     async fn check_opportunities(&mut self) {
+        // 4. CHECK COOLDOWN FIRST
+        if self.last_trigger_time.elapsed() < self.trigger_cooldown {
+            return;
+        }
+
         let state = self.market_state.read().await;
         
         let pm_yes = &state.pm_yes;
@@ -178,7 +185,7 @@ impl OrderbookProcessor {
                     kalshi_ticker: self.kalshi_ticker.clone(),
                     kalshi_side: "no".to_string(),
                     kalshi_price_cents: k_cents,
-                    timestamp: 0, //TODO
+                    timestamp: 0, 
                 };
 
                 if self
@@ -194,6 +201,8 @@ impl OrderbookProcessor {
                         error!("Failed to send opportunity: {}", err);
                     } else {
                         self.position_count += 1;
+                        // 5. UPDATE LAST TRIGGER TIME
+                        self.last_trigger_time = Instant::now();
                     }
                     
                     return;
@@ -216,7 +225,6 @@ impl OrderbookProcessor {
                     timestamp: 0,
                 };
 
-                // RISKY CHECK
                 if self
                     .enter_risk_layer
                     .is_safe_to_enter(&opp, self.position_count)
@@ -230,12 +238,15 @@ impl OrderbookProcessor {
                         error!("Failed to send opportunity: {}", err);
                     } else {
                         self.position_count += 1;
+                        // 6. UPDATE LAST TRIGGER TIME
+                        self.last_trigger_time = Instant::now();
                     }
                 }
             }
         }
     }
-
+    
+    // ... handle_kalshi_snapshot, handle_polymarket_update, handle_kalshi_update remain the same ...
     async fn handle_kalshi_snapshot(&mut self, msg: OrderbookSnapshotMessage) {
         if msg.market_ticker != self.kalshi_ticker {
             return;

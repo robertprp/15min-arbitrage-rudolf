@@ -46,7 +46,6 @@ impl MarketDataOracle {
             .services
             .get_service_unchecked::<ChainLinkService>()
             .await;
-        let kalshi_service = self.services.get_service_unchecked::<KalshiService>().await;
 
         // 1. Setup Chainlink Stream
         let mut chainlink_stream = chainlink_service
@@ -63,9 +62,6 @@ impl MarketDataOracle {
                     match res {
                         Ok(cl_update) => {
                             let price = cl_update.value;
-                            // Note: You might need to adjust scaling here based on the raw value
-                            // For simplicity assuming Decimal handles it or mapped correctly in service
-
                             let event = OracleUpdateEvent::Polymarket {
                                 price,
                                 timestamp: chrono::Utc::now().timestamp(),
@@ -81,7 +77,7 @@ impl MarketDataOracle {
 
                 // --- Kalshi Polling ---
                 _ = kalshi_poll_interval.tick() => {
-                    match kalshi_service.get_last_traded_price(self.symbol.clone()).await {
+                    match KalshiService::get_last_traded_price(self.symbol.clone()).await {
                         Ok((ts, price)) => {
                             let event = OracleUpdateEvent::Kalshi {
                                 price,

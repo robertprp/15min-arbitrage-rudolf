@@ -4,7 +4,7 @@ use lib::AppResult;
 use polymarket_client_sdk::gamma::types::response::Market;
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 
-use crate::market::{ exchange::{KalshiExchange, PolymarketExchange}, symbols::Min15Symbols};
+use crate::{chainlink::service::ChainLinkService, kalshi::service::KalshiService, market::{ exchange::{KalshiExchange, PolymarketExchange}, symbols::Min15Symbols}};
 
 #[derive(Debug, Clone)]
 pub struct MarketMetadata<Exchange> {
@@ -15,11 +15,13 @@ pub struct MarketMetadata<Exchange> {
 }
 
 impl MarketMetadata<PolymarketExchange> {
-    pub fn new_poly(market: Market, strike_price: Decimal) -> AppResult<Self> {
+    pub async fn new_poly(market: Market) -> AppResult<Self> {
         let slug = market.slug.as_ref().context("Polymarket slug is missing")?;
 
         // 2. Parse Ticker (logic abstracted below)
         let symbol = Self::parse_ticker_from_slug(slug)?;
+        
+        let (_ts, strike_price) = ChainLinkService::get_last_15min_open(symbol.clone()).await?;
 
         Ok(Self {
             symbol,
@@ -30,7 +32,7 @@ impl MarketMetadata<PolymarketExchange> {
 }
 
 impl MarketMetadata<KalshiExchange> {
-    pub fn new_kalshi(market: GetEventResponse) -> AppResult<Self> {
+    pub async fn new_kalshi(market: GetEventResponse) -> AppResult<Self> {
         let title = &market.event.title;
         let symbol_str = title
             .split_ascii_whitespace()
@@ -47,7 +49,10 @@ impl MarketMetadata<KalshiExchange> {
         let strike_price = match market.floor_strike {
             Some(strike) => Decimal::from_f64(strike)
                 .context("Failed to convert Kalshi strike price to Decimal")?,
-            None => bail!("Kalshi market data is missing strike price"),
+            None => {
+                let (_ts, strike_price) = KalshiService::get_strike_price(symbol.clone()).await?;
+                strike_price
+            },
         };
 
         Ok(Self {

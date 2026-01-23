@@ -71,12 +71,10 @@ impl<A> RiskLayer<A> {
 
     fn has_fresh_data(&self) -> bool {
         if self.last_poly_underlying_price.is_none() {
-            warn!("⚠️ Risk Layer: Missing underlying asset prices for polymarket.");
             return false;
         }
 
         if self.last_kalshi_underlying_price.is_none() {
-            warn!("⚠️ Risk Layer: Missing underlying asset prices for kalshi.");
             return false;
         }
 
@@ -110,10 +108,12 @@ impl<A> RiskLayer<A> {
 // --- Logic for ENTERING a position ---
 impl RiskLayer<ActionEnter> {
     pub fn is_safe_to_enter(&self, _opp: &Opportunity, current_positions: u32) -> bool {
+        // 1. Basic Data Availability Checks
         if !self.has_fresh_data() {
             return false;
         }
 
+        // 2. Position Limits & Time to Expiry Checks
         let minutes_remaining = self.get_minutes_remaining();
 
         if current_positions >= self.max_positions {
@@ -123,7 +123,56 @@ impl RiskLayer<ActionEnter> {
         if minutes_remaining <= self.min_minutes_to_expiry {
             return false;
         }
+        
+        // 3. Unwrap Prices (Safe because of has_fresh_data check above)
+        let k_price = self.last_kalshi_underlying_price.unwrap();
+        let pm_price = self.last_poly_underlying_price.unwrap();
+        
+        let k_strike = self.kalshi_metadata.strike_price;
+        let pm_strike = self.poly_metadata.strike_price;
 
+        // 4. Define Threshold (0.04% = 0.0004)
+        let max_deviation = Decimal::new(4, 4); // 0.0004
+
+        // --- CHECK A: Underlying Asset Price Divergence ---
+        // If the live price of BTC on Poly vs Kalshi is too different, the markets are disconnected.
+        let price_diff = (pm_price - k_price).abs();
+        
+        // Avoid division by zero (though unlikely for BTC/ETH)
+        if !pm_price.is_zero() {
+            let price_deviation = price_diff / pm_price;
+
+            if price_deviation > max_deviation {
+                warn!(
+                    "🛑 RISK REJECT: Underlying prices diverged. Poly: {}, Kalshi: {}, Diff: {:.4}%", 
+                    pm_price, 
+                    k_price, 
+                    price_deviation * Decimal::from(100)
+                );
+                return false;
+            }
+        }
+
+        // --- CHECK B: Strike Price Divergence ---
+        // If we are arbitraging Strike 90000 vs Strike 90050, we need to be careful.
+        // Ideally, these should be identical, but we allow the small 0.04% buffer just in case.
+        let strike_diff = (pm_strike - k_strike).abs();
+
+        if !pm_strike.is_zero() {
+            let strike_deviation = strike_diff / pm_strike;
+
+            if strike_deviation > max_deviation {
+                warn!(
+                    "🛑 RISK REJECT: Strike prices mismatch. Poly: {}, Kalshi: {}, Diff: {:.4}%", 
+                    pm_strike, 
+                    k_strike, 
+                    strike_deviation * Decimal::from(100)
+                );
+                return false;
+            }
+        }
+        
+        // If we passed all checks, it is safe to enter
         true
     }
 }
@@ -148,10 +197,9 @@ impl RiskLayer<ActionExit> {
         // TODO: Think if we need to be more strict here.
         // We should also check for last underlying price updated time on both.
         // Constants for thresholds
-        let pct_0_1 = Decimal::new(1, 3); // 0.001 (0.1%)
-        let pct_0_05 = Decimal::new(5, 4); // 0.0005 (0.05%)
+        let pct_0_05 = Decimal::new(4, 4); // 0.0005 (0.04%)
 
-        let unwind_secs = 45;
+        let unwind_secs = 60;
         if seconds_remaining < unwind_secs {
             if poly_dist_pct > pct_0_05 && kalshi_dist_pct > pct_0_05 {
                 // correct usage with the tracing crate

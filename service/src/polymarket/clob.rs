@@ -7,7 +7,6 @@ use alloy::signers::{Signer, k256::ecdsa::SigningKey, local::LocalSigner};
 use anyhow::{Context, bail};
 use async_trait::async_trait;
 use polymarket_client_sdk::auth::Normal;
-use polymarket_client_sdk::clob::types::request::TradesRequest;
 use polymarket_client_sdk::clob::types::response::{
     FeeRateResponse, OpenOrderResponse, PostOrderResponse, TickSizeResponse,
 };
