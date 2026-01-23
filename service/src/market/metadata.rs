@@ -4,13 +4,20 @@ use lib::AppResult;
 use polymarket_client_sdk::gamma::types::response::Market;
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 
-use crate::{chainlink::service::ChainLinkService, kalshi::service::KalshiService, market::{ exchange::{KalshiExchange, PolymarketExchange}, symbols::Min15Symbols}};
+use crate::{
+    chainlink::service::ChainLinkService,
+    kalshi::service::KalshiService,
+    market::{
+        exchange::{KalshiExchange, PolymarketExchange},
+        symbols::Min15Symbols,
+    },
+};
 
 #[derive(Debug, Clone)]
 pub struct MarketMetadata<Exchange> {
     pub symbol: Min15Symbols,
     pub strike_price: Decimal,
-    
+
     _phantom: std::marker::PhantomData<Exchange>,
 }
 
@@ -20,14 +27,14 @@ impl MarketMetadata<PolymarketExchange> {
 
         // 2. Parse Ticker (logic abstracted below)
         let symbol = Self::parse_ticker_from_slug(slug)?;
-        
+
         let (_ts, strike_price) = ChainLinkService::get_last_15min_open(symbol.clone()).await?;
 
         Ok(Self {
             symbol,
             strike_price,
             _phantom: std::marker::PhantomData,
-        }) 
+        })
     }
 }
 
@@ -52,7 +59,7 @@ impl MarketMetadata<KalshiExchange> {
             None => {
                 let (_ts, strike_price) = KalshiService::get_strike_price(symbol.clone()).await?;
                 strike_price
-            },
+            }
         };
 
         Ok(Self {

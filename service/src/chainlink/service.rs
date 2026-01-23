@@ -10,7 +10,9 @@ use reqwest::Client as HttpClient;
 use rust_decimal::Decimal;
 
 use crate::{
-    chainlink::types::{ChainlinkResponse, ToChainlinkAsset, CHAINLINK_BTC_PRICE_FEED_ID}, market::symbols::Min15Symbols, services::{ServiceFactory, ServiceProvider}
+    chainlink::types::{CHAINLINK_BTC_PRICE_FEED_ID, ChainlinkResponse, ToChainlinkAsset},
+    market::symbols::Min15Symbols,
+    services::{ServiceFactory, ServiceProvider},
 };
 
 pub struct ChainLinkService {
@@ -26,9 +28,7 @@ impl Default for ChainLinkService {
 impl ChainLinkService {
     pub fn new() -> Self {
         let client = Client::default();
-        Self {
-            client,
-        }
+        Self { client }
     }
 
     // asset in form of btc/usd, eth/usd
@@ -36,10 +36,7 @@ impl ChainLinkService {
         &self,
         asset: impl ToChainlinkAsset,
     ) -> impl Stream<Item = Result<ChainlinkPrice, polymarket_client_sdk::error::Error>> {
-        
-
-        self
-            .client
+        self.client
             .subscribe_chainlink_prices(Some(asset.to_chainlink_asset().to_string()))
             .unwrap()
     }
@@ -50,7 +47,7 @@ impl ChainLinkService {
         if symbol != Min15Symbols::BTC {
             return Err(anyhow!("Unsupported symbol for Chainlink API"));
         }
-        
+
         let url = format!(
             "https://data.chain.link/api/historical-timescale-stream-data?feedId={}&timeRange=1D",
             CHAINLINK_BTC_PRICE_FEED_ID

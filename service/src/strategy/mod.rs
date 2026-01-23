@@ -18,8 +18,8 @@ use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub price_cents: u32, 
-    pub shares: u32,      
+    pub price_cents: u32,
+    pub shares: u32,
 }
 
 #[derive(Debug)]
@@ -72,7 +72,7 @@ impl PositionProvider for PolymarketPosition {
     fn get_timestamp(&self) -> i64 {
         self.timestamp
     }
-    
+
     fn get_price(&self) -> Decimal {
         self.price
     }
@@ -105,7 +105,7 @@ impl PositionProvider for KalshiPosition {
     fn get_timestamp(&self) -> i64 {
         self.timestamp
     }
-    
+
     fn get_price(&self) -> Decimal {
         Decimal::from(self.price_cents) / Decimal::from(100)
     }

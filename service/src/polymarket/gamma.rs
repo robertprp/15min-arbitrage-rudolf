@@ -4,10 +4,7 @@ use chrono_tz::America::New_York;
 use lib::AppResult;
 use polymarket_client_sdk::gamma::{
     Client,
-    types::{
-        request::MarketBySlugRequest,
-        response::Market,
-    },
+    types::{request::MarketBySlugRequest, response::Market},
 };
 
 use crate::{

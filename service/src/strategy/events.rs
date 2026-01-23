@@ -2,7 +2,6 @@ use kalshi_rs::websocket::models::{OrderbookDeltaMessage, OrderbookSnapshotMessa
 use polymarket_client_sdk::clob::ws::BestBidAsk;
 use rust_decimal::Decimal;
 
-
 #[derive(Debug)]
 pub enum OrderbookChangeEvent {
     Polymarket(BestBidAsk),

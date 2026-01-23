@@ -121,7 +121,7 @@ impl KalshiService {
             yes_price: None,
             yes_price_dollars: None,
         };
-        
+
         let extra_cents: u32 = 2;
 
         if side.eq("yes") {
@@ -130,12 +130,10 @@ impl KalshiService {
             } else {
                 req.yes_price = Some((price_cents - extra_cents).into());
             }
+        } else if action.eq("buy") {
+            req.no_price = Some((price_cents + extra_cents).into());
         } else {
-            if action.eq("buy") {
-                req.no_price = Some((price_cents + extra_cents).into());
-            } else {
-                req.no_price = Some((price_cents - extra_cents).into());
-            }
+            req.no_price = Some((price_cents - extra_cents).into());
         }
 
         self.client

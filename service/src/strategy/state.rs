@@ -1,6 +1,6 @@
+use crate::strategy::book::Orderbook;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use crate::strategy::book::Orderbook;
 
 #[derive(Debug, Default)]
 pub struct MarketStateInner {
