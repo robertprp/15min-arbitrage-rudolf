@@ -14,13 +14,14 @@ use std::str::FromStr;
 
 use crate::config::service::ConfigService;
 use crate::kalshi::service::KalshiService;
-use crate::market::exchange::Exchange;
+use crate::market::exchange::{KalshiExchange, PolymarketExchange};
 use crate::market::metadata::MarketMetadata;
 use crate::polymarket::clob::{PolymarketClobService, PolymarketExecutionService};
 use crate::strategy::events::OracleUpdateEvent;
 use crate::strategy::market::Opportunity;
 use crate::strategy::risk::layer::{ActionExit, RiskLayer};
-use crate::strategy::{ArbSizing, Order, PairedPosition, Position};
+use crate::strategy::state::MarketState;
+use crate::strategy::{ArbSizing, KalshiPosition, Order, PairedPosition, PolymarketPosition, PositionProvider};
 
 pub struct PositionManager {
     pub positions: Vec<PairedPosition>,
@@ -39,13 +40,15 @@ pub struct PositionManager {
     // State
     last_action: Instant,
     cooldown: Duration,
+    
+    pub market_state: MarketState,
 
     // Risk Management
     risk_layer: RiskLayer<ActionExit>,
 
     // Channels
-    opportunity_rx: mpsc::Receiver<Opportunity>, // Changed from PairedPosition
-    opportunity_tx: mpsc::Sender<Opportunity>,   // To hand out clones to producers
+    opportunity_rx: mpsc::Receiver<Opportunity>, 
+    opportunity_tx: mpsc::Sender<Opportunity>,   
     oracle_rx: broadcast::Receiver<OracleUpdateEvent>,
 }
 
@@ -53,10 +56,11 @@ pub struct PositionManagerParams {
     pub config_service: Arc<ConfigService>,
     pub clob_service: Arc<PolymarketClobService>,
     pub kalshi_service: Arc<KalshiService>,
-    pub poly_metadata: MarketMetadata,
-    pub kalshi_metadata: MarketMetadata,
+    pub poly_metadata: MarketMetadata<PolymarketExchange>,
+    pub kalshi_metadata: MarketMetadata<KalshiExchange>,
     pub oracle_rx: broadcast::Receiver<OracleUpdateEvent>,
     
+    pub market_state: MarketState,
     // Assets for execution
     pub poly_token_yes: U256,
     pub poly_token_no: U256,
@@ -98,6 +102,7 @@ impl PositionManager {
             kalshi_service,
             pm_exec_yes,
             pm_exec_no,
+            market_state: params.market_state,
             budget_per_trade: Decimal::from(10), // Default budget
             last_action: Instant::now(),
             cooldown: Duration::from_secs(5),
@@ -140,7 +145,6 @@ impl PositionManager {
         }
     }
 
-    /// Logic moved from ArbitrageProcessor
     async fn handle_opportunity(&mut self, opp: Opportunity) {
         // 1. Check Cooldown
         if self.last_action.elapsed() < self.cooldown {
@@ -173,6 +177,7 @@ impl PositionManager {
         // 4. Build Orders
         let quantity_dec = Decimal::from(sizing.quantity);
         
+        // Aggressive limit price for Poly
         let poly_limit_price = opp.poly_price + Decimal::from_str("0.02").unwrap_or_default();
 
         info!("Buying Poly at price {} and amount of shares {}", poly_limit_price, quantity_dec);
@@ -223,17 +228,22 @@ impl PositionManager {
                     "no".to_string()
                 };
 
-                let pm_position = Position {
-                    exchange: Exchange::Polymarket,
+                // Create Specific Positions
+                let pm_position = PolymarketPosition {
                     order_id: poly_resp.order_id,
+                    token_id: opp.poly_token_id,
                     side: pm_side,
+                    shares: quantity_dec,
+                    price: opp.poly_price, 
                     timestamp: chrono::Utc::now().timestamp(),
                 };
 
-                let ks_position = Position {
-                    exchange: Exchange::Kalshi,
+                let ks_position = KalshiPosition {
                     order_id: kalshi_resp.order.order_id,
+                    ticker: opp.kalshi_ticker.clone(), 
                     side: kalshi_resp.order.side,
+                    shares: sizing.quantity,
+                    price_cents: opp.kalshi_price_cents,
                     timestamp: chrono::Utc::now().timestamp(),
                 };
 
@@ -257,20 +267,93 @@ impl PositionManager {
         }
     }
 
-    async fn check_risk_unwind(&self) {
+    pub async fn check_risk_unwind(&mut self) {
         if self.positions.is_empty() {
             return;
         }
-
+    
         if self.risk_layer.should_unwind() {
-            warn!("🚨 RISK SIGNAL: UNWIND TRIGGERED!");
-            
-            // Logic placeholder:
-            // Iterate self.positions and unwind them
-            info!(
-                "Aggressive Unwind Logic would execute here for {} positions.",
-                self.positions.len()
-            );
+            warn!("🚨 RISK SIGNAL: EXECUTING UNWIND SEQUENCE");
+            self.unwind_all_positions().await;
         }
+    }
+    
+    async fn unwind_all_positions(&mut self) {
+        // 1. Snapshot the market state (Read Lock)
+        let (pm_yes_bid, pm_no_bid, k_yes_bid, k_no_bid) = {
+            let state = self.market_state.read().await;
+            (
+                state.pm_yes.best_bid(),
+                state.pm_no.best_bid(),
+                state.k_yes.best_bid(),
+                state.k_no.best_bid(),
+            )
+        };
+    
+        // 2. Iterate and Execute
+        let mut active_positions = std::mem::take(&mut self.positions);
+        
+        for position in active_positions.iter() {
+            
+            // --- Unwind Polymarket Leg ---
+            let poly_pos = &position.polymarket;
+            let exec_service = if poly_pos.get_side() == "yes" {
+                &self.pm_exec_yes
+            } else {
+                &self.pm_exec_no
+            };
+
+            // If we own YES, we sell into the Best Bid of YES
+            let best_bid = if poly_pos.get_side() == "yes" { pm_yes_bid } else { pm_no_bid };
+
+            if let Some(price) = best_bid {
+                let shares_to_sell = poly_pos.get_shares(); 
+                
+                info!("Selling Poly {} shares of {} @ Market (Best Bid: {})", shares_to_sell, poly_pos.get_side(), price);
+                
+                let order_res = exec_service.build_market_order_with_shares(
+                    price, 
+                    shares_to_sell, 
+                    polymarket_client_sdk::clob::types::Side::Sell
+                );
+                
+                if let Ok(order) = order_res {
+                        let _ = exec_service.execute_order(order).await;
+                }
+            } else {
+                error!("No liquidity to unwind Poly {}", poly_pos.get_side());
+            }
+        
+            // --- Unwind Kalshi Leg ---
+            let kalshi_pos = &position.kalshi;
+            let best_bid = if kalshi_pos.get_side() == "yes" { k_yes_bid } else { k_no_bid };
+
+            if let Some(price) = best_bid {
+                    // Convert Decimal price back to cents
+                    let price_cents = (price * Decimal::from(100)).to_u32().unwrap_or(1);
+                    // Convert Decimal shares back to u32 for Kalshi Order
+                    let shares_to_sell = kalshi_pos.get_shares().to_u32().unwrap_or(0);
+
+                    info!("Selling Kalshi {} shares of {} @ {}c", shares_to_sell, kalshi_pos.get_side(), price_cents);
+
+                    if shares_to_sell > 0 {
+                        let order = Order::new(price_cents, shares_to_sell);
+                        
+                        // We use the ticker stored in the position to sell the correct market
+                        let _ = self.kalshi_service.place_market_order(
+                        kalshi_pos.ticker.clone(), 
+                        kalshi_pos.get_side(),
+                        "sell".to_string(),
+                        order
+                        ).await;
+                    }
+            } else {
+                    error!("No liquidity to unwind Kalshi {}", kalshi_pos.get_side());
+            }
+        }
+        
+        // 3. Clear positions
+        self.positions.clear();
+        info!("✅ Unwind sequence complete.");
     }
 }

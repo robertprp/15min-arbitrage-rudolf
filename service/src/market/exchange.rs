@@ -1,5 +1,5 @@
-#[derive(Debug, Clone, PartialEq)]
-pub enum Exchange {
-    Kalshi,
-    Polymarket,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PolymarketExchange;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KalshiExchange;

@@ -23,6 +23,7 @@ use service::{
         manager::{PositionManager, PositionManagerParams},
         oracle::MarketDataOracle,
         orderbook::processor::OrderbookProcessor,
+        state::MarketState, // <--- 1. Added Import
     },
 };
 use tokio::time::sleep;
@@ -92,12 +93,15 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     );
 
     let (_ts, strike_price) = chainlink_service.get_last_15min_open().await?;
-    let pm_metadata = MarketMetadata::from_polymarket(pm_market.clone(), strike_price)?;
-    let kalshi_metadata = MarketMetadata::from_kalshi(kalshi_event)?;
+    let pm_metadata = MarketMetadata::new_poly(pm_market.clone(), strike_price)?;
+    let kalshi_metadata = MarketMetadata::new_kalshi(kalshi_event)?;
 
     // 3. Setup Oracle
     let (oracle, arb_oracle_rx) = MarketDataOracle::new(services.clone(), symbol.clone());
     let manager_oracle_rx = oracle.subscribe();
+
+    // 3b. Initialize Shared Market State
+    let market_state = MarketState::new(); // <--- 2. Initialize State
 
     // 4. Setup Position Manager (Now handles Execution)
     let manager = PositionManager::new(PositionManagerParams {
@@ -109,9 +113,13 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         oracle_rx: manager_oracle_rx,
         poly_token_yes: asset_yes,
         poly_token_no: asset_no,
-    }).await?; // await because new is async now
+        market_state: market_state.clone(), // <--- 3. Fix: Pass MarketState
+    })
+    .await?;
 
     let executor_tx = manager.get_sender().clone();
+    
+    sleep(Duration::from_micros(500)).await;
 
     // 5. Setup Orderbook Processor (Feeds the Manager)
     let mut orderbook_processor = OrderbookProcessor::new(
@@ -122,6 +130,7 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         kalshi_event_ticker.clone(),
         kalshi_market_ticker.clone(),
         edge_decimal,
+        market_state, 
         executor_tx,
         arb_oracle_rx,
     )
@@ -146,6 +155,7 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         }
     });
 
+    sleep(Duration::from_secs(1)).await;
     // 7. Subscribe to Market Data
     let mut pm_stream = pm_ws
         .subscribe_feed(vec![asset_yes, asset_no], vec![condition_id])?

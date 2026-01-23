@@ -4,18 +4,18 @@ use lib::AppResult;
 use polymarket_client_sdk::gamma::types::response::Market;
 use rust_decimal::{Decimal, prelude::FromPrimitive};
 
-use crate::market::{exchange::Exchange, symbols::Min15Symbols};
+use crate::market::{ exchange::{KalshiExchange, PolymarketExchange}, symbols::Min15Symbols};
 
 #[derive(Debug, Clone)]
-pub struct MarketMetadata {
-    pub exchange: Exchange,
+pub struct MarketMetadata<Exchange> {
     pub symbol: Min15Symbols,
     pub strike_price: Decimal,
+    
+    _phantom: std::marker::PhantomData<Exchange>,
 }
 
-impl MarketMetadata {
-    /// Factory method to create a UnifiedMarket from Polymarket data
-    pub fn from_polymarket(market: Market, strike_price: Decimal) -> AppResult<Self> {
+impl MarketMetadata<PolymarketExchange> {
+    pub fn new_poly(market: Market, strike_price: Decimal) -> AppResult<Self> {
         let slug = market.slug.as_ref().context("Polymarket slug is missing")?;
 
         // 2. Parse Ticker (logic abstracted below)
@@ -23,14 +23,15 @@ impl MarketMetadata {
 
         Ok(Self {
             symbol,
-            exchange: Exchange::Polymarket,
             strike_price,
-        })
+            _phantom: std::marker::PhantomData,
+        }) 
     }
+}
 
-    /// Factory method to create a UnifiedMarket from Kalshi data
-    pub fn from_kalshi(response: GetEventResponse) -> AppResult<Self> {
-        let title = &response.event.title;
+impl MarketMetadata<KalshiExchange> {
+    pub fn new_kalshi(market: GetEventResponse) -> AppResult<Self> {
+        let title = &market.event.title;
         let symbol_str = title
             .split_ascii_whitespace()
             .next()
@@ -38,7 +39,7 @@ impl MarketMetadata {
 
         let symbol = Self::map_str_to_symbol(symbol_str)?;
 
-        let market = match response.markets.first() {
+        let market = match market.markets.first() {
             Some(market) => market,
             None => bail!("Kalshi market data is missing"),
         };
@@ -51,13 +52,13 @@ impl MarketMetadata {
 
         Ok(Self {
             symbol,
-            exchange: Exchange::Kalshi,
             strike_price,
+            _phantom: std::marker::PhantomData,
         })
     }
+}
 
-    // --- Helper functions to clean up logic ---
-
+impl<T> MarketMetadata<T> {
     /// Helper to parse tickers specifically from Polymarket slugs (e.g., "btc-2024...")
     fn parse_ticker_from_slug(slug: &str) -> AppResult<Min15Symbols> {
         if slug.starts_with("btc") {
