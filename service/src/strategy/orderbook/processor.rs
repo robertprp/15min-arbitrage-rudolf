@@ -71,7 +71,7 @@ impl OrderbookProcessor {
         executor_tx: mpsc::Sender<Opportunity>,
         oracle_rx: broadcast::Receiver<OracleUpdateEvent>,
     ) -> AppResult<Self> {
-        let (event_tx, event_rx) = mpsc::channel(20_000);
+        let (event_tx, event_rx) = mpsc::channel(10_000);
         let pm_gamma = services
             .get_service_unchecked::<PolymarketGammaService>()
             .await;

@@ -96,6 +96,27 @@ impl PolymarketClobService {
 
         Ok(response)
     }
+    
+    pub async fn post_market_order(&self, token_id: U256, side: Side, amount: Amount) -> AppResult<PostOrderResponse> {
+        let signable_order = self.client.market_order()
+            .token_id(token_id)
+            .side(side)
+            .amount(amount)
+            .build()
+            .await
+            .context("Failed to build market order")?;
+        
+        let signed_order = self.client.sign(&self.signer, signable_order).await.context("Failed to sign order")?;
+        
+        let response = self
+            .client
+            .post_order(signed_order)
+            .await
+            .context("Failed to create market order")?;
+
+        Ok(response)
+    }
+
 }
 
 #[async_trait]
