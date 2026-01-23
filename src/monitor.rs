@@ -26,8 +26,13 @@ use service::{
     },
     utils::get_duration_until_next_window,
 };
-use tokio::time::{sleep, timeout};
+use tokio::{
+    task::JoinHandle,
+    time::{sleep, timeout},
+};
 use tracing::{error, info, warn};
+
+use crate::guard::TaskGuard;
 
 pub struct RunMonitorParams {
     pub services: ServiceProvider,
@@ -90,6 +95,9 @@ async fn monitor_single_window(
     services: ServiceProvider,
     min_entry_edge_cents: f64,
 ) -> AppResult<()> {
+    // 0. Initialize Task Guard to kill tasks on return/timeout
+    let mut task_guard = TaskGuard { handles: vec![] };
+
     let config_service = services.get_service_unchecked::<ConfigService>().await;
 
     // 1. Retrieve Services
@@ -189,27 +197,31 @@ async fn monitor_single_window(
     )
     .await?;
 
-    // 7. Spawn Tasks
-    // We capture the JoinHandles (implicitly) but since we are in a timeout block in `run_monitor`,
-    // when this function returns, the channels (tx/rx) will drop.
-    // The spawned loops rely on channel communication; once channels break, they will exit gracefully.
-    tokio::spawn(async move {
+    // 7. Spawn Tasks and Track Handles
+    
+    // Spawn Oracle
+    let oracle_handle = tokio::spawn(async move {
         oracle.run().await;
     });
+    task_guard.handles.push(oracle_handle);
 
-    tokio::spawn(async move {
+    // Spawn Manager
+    let manager_handle = tokio::spawn(async move {
         manager.start().await;
     });
+    task_guard.handles.push(manager_handle);
 
     sleep(Duration::from_secs(1)).await;
 
     let event_tx = orderbook_processor.get_event_sender();
 
-    tokio::spawn(async move {
+    // Spawn Processor
+    let processor_handle = tokio::spawn(async move {
         if let Err(e) = orderbook_processor.start().await {
             error!("Orderbook Processor Error: {}", e);
         }
     });
+    task_guard.handles.push(processor_handle);
 
     sleep(Duration::from_secs(1)).await;
 

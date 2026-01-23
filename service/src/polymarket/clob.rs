@@ -353,6 +353,27 @@ impl PolymarketExecutionService {
         }
     }
 
+    /// This function creates, signs and send all using polymarket sdk. it should be quite low since the sdk does lots of request to clob
+    pub async fn create_and_send_high_latency_market_order(&self, token_id: U256, amount: Amount, side: Side) -> AppResult<PostOrderResponse> {
+        let signable_order = self.clob
+            .client
+            .market_order()
+            .token_id(token_id)
+            .amount(amount)
+            .side(side)
+            .build().await?;
+
+        let signed_order = self.clob.client.sign(&self.clob.signer, signable_order).await?;
+        
+        let response = self.clob.client.post_order(signed_order).await?;
+
+        if response.success {
+            Ok(response)
+        } else {
+            anyhow::bail!("Order failed: {:?}", response.error_msg);
+        }
+    }
+
     // Helper to match SDK math
     fn to_fixed_u128(d: Decimal) -> u128 {
         d.normalize()
