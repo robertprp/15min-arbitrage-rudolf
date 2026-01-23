@@ -23,8 +23,6 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Start the arbitrage
-    Unified { symbol: Min15Symbols },
-    /// Start the arbitrage
     Arbitrage {
         #[arg(long)]
         symbol: Min15Symbols,
@@ -58,18 +56,6 @@ impl Cli {
             .await;
 
         match self.command {
-            Commands::Unified { symbol } => {
-                let poly_market = polymarket_gamma_service
-                    .get_current_15min_market_by_symbol(symbol.clone())
-                    .await?;
-                let (open_price, open_timestamp) = chainlink_service.get_last_15min_open().await?;
-
-                let kalshi_market = kalshi_service
-                    .get_current_15min_market_by_symbol(symbol)
-                    .await?;
-
-                Ok(())
-            }
             // Execute the new command
             Commands::Arbitrage { min_edge, symbol } => {
                 let params = RunMonitorParams {

@@ -10,13 +10,11 @@ use reqwest::Client as HttpClient;
 use rust_decimal::Decimal;
 
 use crate::{
-    chainlink::types::{CHAINLINK_BTC_PRICE_FEED_ID, ChainlinkResponse, ToChainlinkAsset},
-    services::{ServiceFactory, ServiceProvider},
+    chainlink::types::{ChainlinkResponse, ToChainlinkAsset, CHAINLINK_BTC_PRICE_FEED_ID}, market::symbols::Min15Symbols, services::{ServiceFactory, ServiceProvider}
 };
 
 pub struct ChainLinkService {
     client: Client,
-    http_client: HttpClient,
 }
 
 impl Default for ChainLinkService {
@@ -28,10 +26,8 @@ impl Default for ChainLinkService {
 impl ChainLinkService {
     pub fn new() -> Self {
         let client = Client::default();
-        let http_client = HttpClient::new();
         Self {
             client,
-            http_client,
         }
     }
 
@@ -50,14 +46,18 @@ impl ChainLinkService {
 
     /// Fetches the last 15-minute candle open price from Chainlink Data Streams.
     /// Returns (Price, UnixTimestamp).
-    pub async fn get_last_15min_open(&self) -> AppResult<(i64, Decimal)> {
+    pub async fn get_last_15min_open(symbol: Min15Symbols) -> AppResult<(i64, Decimal)> {
+        if symbol != Min15Symbols::BTC {
+            return Err(anyhow!("Unsupported symbol for Chainlink API"));
+        }
+        
         let url = format!(
             "https://data.chain.link/api/historical-timescale-stream-data?feedId={}&timeRange=1D",
             CHAINLINK_BTC_PRICE_FEED_ID
         );
 
-        let response = self
-            .http_client
+        let http_client = HttpClient::new();
+        let response = http_client
             .get(&url)
             .send()
             .await

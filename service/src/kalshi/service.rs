@@ -4,7 +4,6 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{Timelike, Utc};
 use chrono_tz::America::New_York;
-use colorful::ExtraColorInterface;
 use kalshi_rs::{
     Account, KalshiClient, KalshiWebsocketClient,
     events::models::GetEventResponse,
@@ -47,7 +46,30 @@ impl KalshiService {
         Ok(Self { client, ws_client })
     }
 
-    pub async fn get_last_traded_price(&self, symbol: Min15Symbols) -> AppResult<(i64, Decimal)> {
+    pub async fn get_strike_price(symbol: Min15Symbols) -> AppResult<(i64, Decimal)> {
+        let symbol = format!("{:?}", symbol);
+        let url = format!(
+            "https://kalshi-public-docs.s3.amazonaws.com/external/crypto/{}_current.json?allowRequestEvenIfPageIsHidden=true",
+            symbol.to_lowercase()
+        );
+        let response = reqwest::get(&url).await?;
+        let data: serde_json::Value = response.json().await?;
+
+        let ts_ms = data["maturity_ts_ms"]
+            .as_i64()
+            .context("Invalid maturity_ts_ms data")?;
+        let value = data["candlesticks"]["15M"]["open"]
+            .as_f64()
+            .context("Invalid close value")?;
+
+        let ts_secs = ts_ms / 1000;
+
+        let price = Decimal::from_f64(value).context("Failed to convert value to Decimal")?;
+
+        Ok((ts_secs, price))
+    }
+
+    pub async fn get_last_traded_price(symbol: Min15Symbols) -> AppResult<(i64, Decimal)> {
         let symbol = format!("{:?}", symbol);
         let url = format!(
             "https://kalshi-public-docs.s3.amazonaws.com/external/crypto/{}_current.json?allowRequestEvenIfPageIsHidden=true",
