@@ -31,20 +31,12 @@ impl Orderbook {
     }
 
     /// Best price to SELL into (Highest Bid)
-    pub fn best_bid(&self) -> Option<Decimal> {
-        self.bids.keys().next_back().cloned()
-    }
+    // pub fn best_bid(&self) -> Option<Decimal> {
+    // self.bids.keys().next_back().cloned()
+    // }
 
     /// Best price to BUY from (Lowest Ask)
     pub fn best_ask(&self) -> Option<Decimal> {
         self.asks.keys().next().cloned()
-    }
-
-    pub fn is_arbitrage_possible(&self, ob: &Orderbook, edge: Decimal) -> bool {
-        if let (Some(best_bid), Some(best_ask)) = (self.best_bid(), ob.best_ask()) {
-            best_bid > best_ask + edge
-        } else {
-            false
-        }
     }
 }

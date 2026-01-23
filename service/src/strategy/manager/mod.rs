@@ -7,9 +7,9 @@ use polymarket_client_sdk::clob::types::Side;
 use polymarket_client_sdk::types::U256;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::ToPrimitive;
+use std::str::FromStr;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{error, info, warn};
-use std::str::FromStr;
 
 use crate::config::service::ConfigService;
 use crate::kalshi::service::KalshiService;
@@ -20,7 +20,9 @@ use crate::strategy::events::OracleUpdateEvent;
 use crate::strategy::market::Opportunity;
 use crate::strategy::risk::layer::{ActionExit, RiskLayer};
 use crate::strategy::state::MarketState;
-use crate::strategy::{ArbSizing, KalshiPosition, Order, PairedPosition, PolymarketPosition, PositionProvider};
+use crate::strategy::{
+    ArbSizing, KalshiPosition, Order, PairedPosition, PolymarketPosition, PositionProvider,
+};
 
 pub struct PositionManager {
     pub positions: Vec<PairedPosition>,
@@ -28,7 +30,7 @@ pub struct PositionManager {
     // Services
     clob_service: Arc<PolymarketClobService>,
     kalshi_service: Arc<KalshiService>,
-    
+
     // Execution Helpers
     pm_exec_yes: Arc<PolymarketExecutionService>,
     pm_exec_no: Arc<PolymarketExecutionService>,
@@ -39,15 +41,15 @@ pub struct PositionManager {
     // State
     last_action: Instant,
     cooldown: Duration,
-    
+
     pub market_state: MarketState,
 
     // Risk Management
     risk_layer: RiskLayer<ActionExit>,
 
     // Channels
-    opportunity_rx: mpsc::Receiver<Opportunity>, 
-    opportunity_tx: mpsc::Sender<Opportunity>,   
+    opportunity_rx: mpsc::Receiver<Opportunity>,
+    opportunity_tx: mpsc::Sender<Opportunity>,
     oracle_rx: broadcast::Receiver<OracleUpdateEvent>,
 }
 
@@ -58,7 +60,7 @@ pub struct PositionManagerParams {
     pub poly_metadata: MarketMetadata<PolymarketExchange>,
     pub kalshi_metadata: MarketMetadata<KalshiExchange>,
     pub oracle_rx: broadcast::Receiver<OracleUpdateEvent>,
-    
+
     pub market_state: MarketState,
     // Assets for execution
     pub poly_token_yes: U256,
@@ -78,18 +80,20 @@ impl PositionManager {
         // Initialize Execution Services (Async network calls)
         let pm_exec_yes = Arc::new(
             PolymarketExecutionService::new(
-                clob_service.clone(), 
-                params.config_service.clone(), 
-                params.poly_token_yes
-            ).await?
+                clob_service.clone(),
+                params.config_service.clone(),
+                params.poly_token_yes,
+            )
+            .await?,
         );
 
         let pm_exec_no = Arc::new(
             PolymarketExecutionService::new(
-                clob_service.clone(), 
-                params.config_service.clone(), 
-                params.poly_token_no
-            ).await?
+                clob_service.clone(),
+                params.config_service.clone(),
+                params.poly_token_no,
+            )
+            .await?,
         );
 
         // Initialize Exit Risk Layer
@@ -158,13 +162,14 @@ impl PositionManager {
             .to_u32()
             .unwrap_or(100);
 
-        let sizing = match ArbSizing::calculate(self.budget_per_trade, poly_cents, opp.kalshi_price_cents) {
-            Some(s) => s,
-            None => {
-                warn!("Could not calculate sizing for opportunity");
-                return;
-            }
-        };
+        let sizing =
+            match ArbSizing::calculate(self.budget_per_trade, poly_cents, opp.kalshi_price_cents) {
+                Some(s) => s,
+                None => {
+                    warn!("Could not calculate sizing for opportunity");
+                    return;
+                }
+            };
 
         // 3. Determine correct Poly Execution Service
         let exec_service = if opp.poly_token_id == self.pm_exec_yes.token_id {
@@ -175,14 +180,21 @@ impl PositionManager {
 
         // 4. Build Orders
         let quantity_dec = Decimal::from(sizing.quantity);
-        
-        // Check for this, if we should do this or use FOK orders?
-        let poly_limit_price = opp.poly_price + Decimal::from_str("0.02").unwrap_or_default();
 
-        info!("Buying Poly at price {} and amount of shares {}", poly_limit_price, quantity_dec);
-        info!("Buying Kalshi at price {} and amount of shares {}", opp.kalshi_price_cents, quantity_dec);
+        // TODO: Check for this, if we should do this or use FOK orders?
+        let poly_limit_price = opp.poly_price + Decimal::from_str("0.05").unwrap_or_default();
 
-        let poly_order_res = exec_service.build_market_order_with_shares(poly_limit_price, quantity_dec, Side::Buy);
+        info!(
+            "Buying Poly at price {} and amount of shares {}",
+            poly_limit_price, quantity_dec
+        );
+        info!(
+            "Buying Kalshi at price {} and amount of shares {}",
+            opp.kalshi_price_cents, quantity_dec
+        );
+
+        let poly_order_res =
+            exec_service.build_market_order_with_shares(poly_limit_price, quantity_dec, Side::Buy);
 
         let poly_order = match poly_order_res {
             Ok(o) => o,
@@ -217,7 +229,7 @@ impl PositionManager {
                     "✅ ENTRY SUCCESSFUL: Poly TX: {:?}, Kalshi Filled",
                     poly_resp.order_id
                 );
-                
+
                 // Update State
                 self.last_action = Instant::now();
 
@@ -233,13 +245,13 @@ impl PositionManager {
                     token_id: opp.poly_token_id,
                     side: pm_side,
                     shares: quantity_dec,
-                    price: opp.poly_price, 
+                    price: opp.poly_price,
                     timestamp: chrono::Utc::now().timestamp(),
                 };
 
                 let ks_position = KalshiPosition {
                     order_id: kalshi_resp.order.order_id,
-                    ticker: opp.kalshi_ticker.clone(), 
+                    ticker: opp.kalshi_ticker.clone(),
                     side: kalshi_resp.order.side,
                     shares: sizing.quantity,
                     price_cents: opp.kalshi_price_cents,
@@ -247,17 +259,26 @@ impl PositionManager {
                 };
 
                 let paired_position = PairedPosition::new(pm_position, ks_position);
-                
+
                 // Track internally
                 self.positions.push(paired_position);
-                info!("✅ Position Manager tracked new position. Total: {}", self.positions.len());
+                info!(
+                    "✅ Position Manager tracked new position. Total: {}",
+                    self.positions.len()
+                );
             }
             (Err(e), Ok(_)) => {
-                error!("⚠️ PARTIAL FILL ERROR: Poly Failed ({:?}) but Kalshi Executed!", e);
+                error!(
+                    "⚠️ PARTIAL FILL ERROR: Poly Failed ({:?}) but Kalshi Executed!",
+                    e
+                );
                 // TODO: Implement emergency exit for Kalshi leg
             }
             (Ok(_), Err(e)) => {
-                error!("⚠️ PARTIAL FILL ERROR: Kalshi Failed ({:?}) but Poly Executed!", e);
+                error!(
+                    "⚠️ PARTIAL FILL ERROR: Kalshi Failed ({:?}) but Poly Executed!",
+                    e
+                );
                 // TODO: Implement emergency exit for Poly leg
             }
             (Err(ep), Err(ek)) => {
@@ -270,30 +291,29 @@ impl PositionManager {
         if self.positions.is_empty() {
             return;
         }
-    
+
         if self.risk_layer.should_unwind() {
             warn!("🚨 RISK SIGNAL: EXECUTING UNWIND SEQUENCE");
             self.unwind_all_positions().await;
         }
     }
-    
+
     async fn unwind_all_positions(&mut self) {
         // 1. Snapshot the market state (Read Lock)
         let (pm_yes_bid, pm_no_bid, k_yes_bid, k_no_bid) = {
             let state = self.market_state.read().await;
             (
-                state.pm_yes.best_bid(),
-                state.pm_no.best_bid(),
-                state.k_yes.best_bid(),
-                state.k_no.best_bid(),
+                state.pm_yes.best_ask(),
+                state.pm_no.best_ask(),
+                state.k_yes.best_ask(),
+                state.k_no.best_ask(),
             )
         };
-    
+
         // 2. Iterate and Execute
-        let mut active_positions = std::mem::take(&mut self.positions);
-        
+        let active_positions = std::mem::take(&mut self.positions);
+
         for position in active_positions.iter() {
-            
             // --- Unwind Polymarket Leg ---
             let poly_pos = &position.polymarket;
             let exec_service = if poly_pos.get_side() == "yes" {
@@ -303,54 +323,76 @@ impl PositionManager {
             };
 
             // If we own YES, we sell into the Best Bid of YES
-            let best_bid = if poly_pos.get_side() == "yes" { pm_yes_bid } else { pm_no_bid };
+            let best_bid = if poly_pos.get_side() == "yes" {
+                pm_yes_bid
+            } else {
+                pm_no_bid
+            };
 
             if let Some(price) = best_bid {
-                let shares_to_sell = poly_pos.get_shares(); 
-                
-                info!("Selling Poly {} shares of {} @ Market (Best Bid: {})", shares_to_sell, poly_pos.get_side(), price);
-                
-                let order_res = exec_service.build_market_order_with_shares(
-                    price, 
-                    shares_to_sell, 
-                    polymarket_client_sdk::clob::types::Side::Sell
+                let price = price + Decimal::from_str("0.02").unwrap();
+                let shares_to_sell = poly_pos.get_shares();
+
+                info!(
+                    "Selling Poly {} shares of {} @ Market (Best Bid: {})",
+                    shares_to_sell,
+                    poly_pos.get_side(),
+                    price
                 );
-                
+
+                let order_res = exec_service.build_market_order_with_shares(
+                    price,
+                    shares_to_sell,
+                    polymarket_client_sdk::clob::types::Side::Sell,
+                );
+
                 if let Ok(order) = order_res {
-                        let _ = exec_service.execute_order(order).await;
+                    let _ = exec_service.execute_order(order).await;
                 }
             } else {
                 error!("No liquidity to unwind Poly {}", poly_pos.get_side());
             }
-        
+
             // --- Unwind Kalshi Leg ---
             let kalshi_pos = &position.kalshi;
-            let best_bid = if kalshi_pos.get_side() == "yes" { k_yes_bid } else { k_no_bid };
+            let best_bid = if kalshi_pos.get_side() == "yes" {
+                k_yes_bid
+            } else {
+                k_no_bid
+            };
 
             if let Some(price) = best_bid {
-                    // Convert Decimal price back to cents
-                    let price_cents = (price * Decimal::from(100)).to_u32().unwrap_or(1);
-                    // Convert Decimal shares back to u32 for Kalshi Order
-                    let shares_to_sell = kalshi_pos.get_shares().to_u32().unwrap_or(0);
+                // Convert Decimal price back to cents
+                let price_cents = (price * Decimal::from(100)).to_u32().unwrap_or(1);
+                // Convert Decimal shares back to u32 for Kalshi Order
+                let shares_to_sell = kalshi_pos.get_shares().to_u32().unwrap_or(0);
 
-                    info!("Selling Kalshi {} shares of {} @ {}c", shares_to_sell, kalshi_pos.get_side(), price_cents);
+                info!(
+                    "Selling Kalshi {} shares of {} @ {}c",
+                    shares_to_sell,
+                    kalshi_pos.get_side(),
+                    price_cents
+                );
 
-                    if shares_to_sell > 0 {
-                        let order = Order::new(price_cents, shares_to_sell);
-                        
-                        // We use the ticker stored in the position to sell the correct market
-                        let _ = self.kalshi_service.place_market_order(
-                        kalshi_pos.ticker.clone(), 
-                        kalshi_pos.get_side(),
-                        "sell".to_string(),
-                        order
-                        ).await;
-                    }
+                if shares_to_sell > 0 {
+                    let order = Order::new(price_cents, shares_to_sell);
+
+                    // We use the ticker stored in the position to sell the correct market
+                    let _ = self
+                        .kalshi_service
+                        .place_market_order(
+                            kalshi_pos.ticker.clone(),
+                            kalshi_pos.get_side(),
+                            "sell".to_string(),
+                            order,
+                        )
+                        .await;
+                }
             } else {
-                    error!("No liquidity to unwind Kalshi {}", kalshi_pos.get_side());
+                error!("No liquidity to unwind Kalshi {}", kalshi_pos.get_side());
             }
         }
-        
+
         // 3. Clear positions
         self.positions.clear();
         info!("✅ Unwind sequence complete.");

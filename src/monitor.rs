@@ -8,7 +8,6 @@ use kalshi_rs::websocket::models::KalshiSocketMessage;
 use lib::AppResult;
 use rust_decimal::Decimal;
 use service::{
-    chainlink::service::ChainLinkService,
     config::service::ConfigService,
     kalshi::service::KalshiService,
     market::{metadata::MarketMetadata, symbols::Min15Symbols},
@@ -25,9 +24,9 @@ use service::{
         orderbook::processor::OrderbookProcessor,
         state::MarketState,
     },
-    utils::get_duration_until_next_window, // <--- Import the new util
+    utils::get_duration_until_next_window,
 };
-use tokio::time::{sleep, timeout}; // <--- Import timeout
+use tokio::time::{sleep, timeout};
 use tracing::{error, info, warn};
 
 pub struct RunMonitorParams {
@@ -42,21 +41,28 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     loop {
         // 1. Calculate how long to run this session
         let duration_left = get_duration_until_next_window();
-        
-        // If we are extremely close to the edge (e.g. < 5 seconds), 
+
+        // If we are extremely close to the edge (e.g. < 5 seconds),
         // wait for the next window to start to avoid setting up a dying market.
         if duration_left.as_secs() < 10 {
-            info!("⏳ Too close to window close ({}s). Waiting for next window...", duration_left.as_secs());
+            info!(
+                "⏳ Too close to window close ({}s). Waiting for next window...",
+                duration_left.as_secs()
+            );
             sleep(duration_left + Duration::from_secs(4)).await;
             continue;
         }
 
-        info!("⏱️  Starting Session. Time remaining in window: {:?}", duration_left);
+        info!(
+            "⏱️  Starting Session. Time remaining in window: {:?}",
+            duration_left
+        );
 
         let session_result = timeout(
             duration_left,
-            monitor_single_window(params.services.clone(), params.min_entry_edge_cents)
-        ).await;
+            monitor_single_window(params.services.clone(), params.min_entry_edge_cents),
+        )
+        .await;
 
         // 3. Handle End of Window
         match session_result {
@@ -74,25 +80,34 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
                 sleep(Duration::from_secs(2)).await;
             }
         }
-        
+
         // Loop repeats, creating fresh state, managers, and processors.
     }
 }
 
 /// The Logic for a Single 15-Minute Window
-async fn monitor_single_window(services: ServiceProvider, min_entry_edge_cents: f64) -> AppResult<()> {
+async fn monitor_single_window(
+    services: ServiceProvider,
+    min_entry_edge_cents: f64,
+) -> AppResult<()> {
     let config_service = services.get_service_unchecked::<ConfigService>().await;
 
     // 1. Retrieve Services
-    let pm_gamma = services.get_service_unchecked::<PolymarketGammaService>().await;
-    let pm_ws = services.get_service_unchecked::<PolymarketWebSocketService>().await;
-    let pm_clob = services.get_service_unchecked::<PolymarketClobService>().await;
+    let pm_gamma = services
+        .get_service_unchecked::<PolymarketGammaService>()
+        .await;
+    let pm_ws = services
+        .get_service_unchecked::<PolymarketWebSocketService>()
+        .await;
+    let pm_clob = services
+        .get_service_unchecked::<PolymarketClobService>()
+        .await;
     let kalshi = services.get_service_unchecked::<KalshiService>().await;
 
     // 2. Configuration & Market Discovery
     let symbol = Min15Symbols::BTC;
-    let edge_decimal = Decimal::from_str(&min_entry_edge_cents.to_string())
-        .context("Invalid edge decimal")?;
+    let edge_decimal =
+        Decimal::from_str(&min_entry_edge_cents.to_string()).context("Invalid edge decimal")?;
 
     info!("🔎 Discovering Markets for {:?}...", symbol);
 
@@ -156,7 +171,7 @@ async fn monitor_single_window(services: ServiceProvider, min_entry_edge_cents: 
     .await?;
 
     let executor_tx = manager.get_sender().clone();
-    
+
     sleep(Duration::from_micros(500)).await;
 
     // 6. Setup Orderbook Processor
@@ -168,7 +183,7 @@ async fn monitor_single_window(services: ServiceProvider, min_entry_edge_cents: 
         kalshi_event_ticker.clone(),
         kalshi_market_ticker.clone(),
         edge_decimal,
-        market_state, 
+        market_state,
         executor_tx,
         arb_oracle_rx,
     )
@@ -197,7 +212,7 @@ async fn monitor_single_window(services: ServiceProvider, min_entry_edge_cents: 
     });
 
     sleep(Duration::from_secs(1)).await;
-    
+
     // 8. Subscribe to Market Data
     // Polymarket WS
     let mut pm_stream = pm_ws
@@ -247,7 +262,7 @@ async fn monitor_single_window(services: ServiceProvider, min_entry_edge_cents: 
                     Err(e) => {
                         error!("Kalshi WS Error: {:?}", e);
                         // Optional: Break to trigger restart or continue
-                        break; 
+                        break;
                     }
                     _ => {}
                 }

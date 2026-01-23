@@ -1,4 +1,3 @@
-
 use clap::{Parser, Subcommand};
 use lib::AppResult;
 use service::{

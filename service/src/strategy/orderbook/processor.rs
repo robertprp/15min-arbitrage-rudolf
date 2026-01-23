@@ -1,6 +1,5 @@
 // File: service/src/strategy/orderbook/processor.rs
 
-use futures::StreamExt;
 use kalshi_rs::websocket::models::{OrderbookDeltaMessage, OrderbookSnapshotMessage};
 use lib::AppResult;
 use polymarket_client_sdk::clob::ws::BestBidAsk;
@@ -9,26 +8,24 @@ use rust_decimal::Decimal;
 use tokio::{
     select,
     sync::{broadcast, mpsc},
-    task::JoinHandle,
 };
 use tracing::{error, info, warn};
 // 1. IMPORT TIME MODULES
-use std::time::{Duration, Instant}; 
+use std::time::{Duration, Instant};
 
-use crate::{market::exchange::{KalshiExchange, PolymarketExchange}, strategy::{events::OracleUpdateEvent, state::MarketState}};
 use crate::strategy::risk::layer::ActionEnter;
 use crate::{
-    chainlink::service::ChainLinkService,
     kalshi::service::KalshiService,
     market::metadata::MarketMetadata,
     polymarket::gamma::PolymarketGammaService,
     services::ServiceProvider,
     strategy::{
-        book::Orderbook,
-        events::OrderbookChangeEvent,
-        market::Opportunity,
-        risk::layer::RiskLayer,
+        book::Orderbook, events::OrderbookChangeEvent, market::Opportunity, risk::layer::RiskLayer,
     },
+};
+use crate::{
+    market::exchange::{KalshiExchange, PolymarketExchange},
+    strategy::{events::OracleUpdateEvent, state::MarketState},
 };
 use rust_decimal::prelude::ToPrimitive;
 
@@ -48,9 +45,9 @@ pub struct OrderbookProcessor {
     pub market_state: MarketState,
 
     pub position_count: u32,
-    
+
     // 2. ADD COOLDOWN FIELDS
-    pub last_trigger_time: Instant, 
+    pub last_trigger_time: Instant,
     pub trigger_cooldown: Duration,
 
     // Channels
@@ -70,7 +67,7 @@ impl OrderbookProcessor {
         kalshi_event_ticker: String,
         kalshi_market_ticker: String,
         min_edge: Decimal,
-        market_state: MarketState, 
+        market_state: MarketState,
         executor_tx: mpsc::Sender<Opportunity>,
         oracle_rx: broadcast::Receiver<OracleUpdateEvent>,
     ) -> AppResult<Self> {
@@ -83,8 +80,10 @@ impl OrderbookProcessor {
         let k_market = kalshi_service.get_event(&kalshi_event_ticker).await?;
         let pm_market = pm_gamma.get_market_by_slug(&poly_ticker).await?;
 
-        let k_metadata: MarketMetadata<KalshiExchange> = MarketMetadata::new_kalshi(k_market).await?;
-        let pm_metadata: MarketMetadata<PolymarketExchange> = MarketMetadata::new_poly(pm_market).await?;
+        let k_metadata: MarketMetadata<KalshiExchange> =
+            MarketMetadata::new_kalshi(k_market).await?;
+        let pm_metadata: MarketMetadata<PolymarketExchange> =
+            MarketMetadata::new_poly(pm_market).await?;
 
         // Initialize Risk Layers
         let enter_risk_layer = RiskLayer::new(pm_metadata.clone(), k_metadata.clone());
@@ -149,7 +148,9 @@ impl OrderbookProcessor {
         match event {
             OrderbookChangeEvent::Polymarket(bba) => self.handle_polymarket_update(bba).await,
             OrderbookChangeEvent::KalshiDelta(delta) => self.handle_kalshi_update(delta).await,
-            OrderbookChangeEvent::KalshiSnapshot(snapshot) => self.handle_kalshi_snapshot(snapshot).await
+            OrderbookChangeEvent::KalshiSnapshot(snapshot) => {
+                self.handle_kalshi_snapshot(snapshot).await
+            }
         }
 
         // Check for arbitrage immediately after update
@@ -163,7 +164,7 @@ impl OrderbookProcessor {
         }
 
         let state = self.market_state.read().await;
-        
+
         let pm_yes = &state.pm_yes;
         let pm_no = &state.pm_no;
         let k_yes = &state.k_yes;
@@ -185,7 +186,7 @@ impl OrderbookProcessor {
                     kalshi_ticker: self.kalshi_ticker.clone(),
                     kalshi_side: "no".to_string(),
                     kalshi_price_cents: k_cents,
-                    timestamp: 0, 
+                    timestamp: 0,
                 };
 
                 if self
@@ -196,7 +197,7 @@ impl OrderbookProcessor {
                         "🚀 Arb Opportunity Found (A): Cost {} (P: {} + K_No: {})",
                         total_cost, p_ask, k_ask_no
                     );
-                    
+
                     if let Err(err) = self.executor_tx.send(opp).await {
                         error!("Failed to send opportunity: {}", err);
                     } else {
@@ -204,7 +205,7 @@ impl OrderbookProcessor {
                         // 5. UPDATE LAST TRIGGER TIME
                         self.last_trigger_time = Instant::now();
                     }
-                    
+
                     return;
                 }
             }
@@ -212,7 +213,7 @@ impl OrderbookProcessor {
 
         if let (Some(p_ask), Some(k_ask_yes)) = (pm_no.best_ask(), k_yes.best_ask()) {
             let total_cost = p_ask + k_ask_yes;
-            
+
             if total_cost + self.min_edge < one {
                 let k_cents = (k_ask_yes * one_hundred).ceil().to_u32().unwrap_or(99);
 
@@ -245,15 +246,17 @@ impl OrderbookProcessor {
             }
         }
     }
-    
+
     // ... handle_kalshi_snapshot, handle_polymarket_update, handle_kalshi_update remain the same ...
     async fn handle_kalshi_snapshot(&mut self, msg: OrderbookSnapshotMessage) {
         if msg.market_ticker != self.kalshi_ticker {
             return;
         }
-        
-        if msg.market_ticker != self.kalshi_ticker { return; }
-        
+
+        if msg.market_ticker != self.kalshi_ticker {
+            return;
+        }
+
         let mut state = self.market_state.write().await;
 
         // 1. Reset Books (Snapshot is the source of truth)
@@ -297,7 +300,7 @@ impl OrderbookProcessor {
 
     async fn handle_polymarket_update(&mut self, update: BestBidAsk) {
         let mut state = self.market_state.write().await;
-        
+
         let book = if update.asset_id == self.poly_yes_asset {
             &mut state.pm_yes
         } else if update.asset_id == self.poly_no_asset {
@@ -324,7 +327,7 @@ impl OrderbookProcessor {
         }
 
         let mut state = self.market_state.write().await;
-        
+
         let one = Decimal::from(1);
         let one_hundred = Decimal::from(100);
         let price_cents = msg.price;
@@ -342,12 +345,7 @@ impl OrderbookProcessor {
                 if price < one {
                     let inverted_price = one - price;
 
-                    Self::apply_delta_to_book(
-                        &mut state.k_no,
-                        false,
-                        inverted_price,
-                        delta_qty,
-                    );
+                    Self::apply_delta_to_book(&mut state.k_no, false, inverted_price, delta_qty);
                 }
             }
 
@@ -357,12 +355,7 @@ impl OrderbookProcessor {
                 if price < one {
                     let inverted_price = one - price;
 
-                    Self::apply_delta_to_book(
-                        &mut state.k_yes,
-                        false,
-                        inverted_price,
-                        delta_qty,
-                    );
+                    Self::apply_delta_to_book(&mut state.k_yes, false, inverted_price, delta_qty);
                 }
             }
 
@@ -370,12 +363,7 @@ impl OrderbookProcessor {
         }
     }
 
-    fn apply_delta_to_book(
-        book: &mut Orderbook, 
-        is_bid: bool,
-        price: Decimal,
-        delta: Decimal,
-    ) {
+    fn apply_delta_to_book(book: &mut Orderbook, is_bid: bool, price: Decimal, delta: Decimal) {
         let current_qty = if is_bid {
             book.bids.get(&price).cloned().unwrap_or(Decimal::ZERO)
         } else {

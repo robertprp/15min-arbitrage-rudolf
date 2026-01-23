@@ -1,13 +1,11 @@
 // File: service/src/strategy/risk/layer.rs
 
-use crate::kalshi::service::KalshiService;
 use crate::market::exchange::{KalshiExchange, PolymarketExchange};
-use crate::{market::metadata::MarketMetadata, polymarket::clob::PolymarketClobService};
+use crate::market::metadata::MarketMetadata;
 use crate::strategy::market::Opportunity;
 use chrono::{DateTime, Timelike, Utc};
 use rust_decimal::Decimal;
 use std::marker::PhantomData;
-use std::sync::Arc;
 use tracing::{info, warn};
 
 // --- Action Markers ---
@@ -45,7 +43,10 @@ pub struct RiskLayerParams {
 
 // --- Common Implementation (Getters/Setters) ---
 impl<A> RiskLayer<A> {
-    pub fn new(poly_metadata: MarketMetadata<PolymarketExchange>, kalshi_metadata: MarketMetadata<KalshiExchange>) -> Self {
+    pub fn new(
+        poly_metadata: MarketMetadata<PolymarketExchange>,
+        kalshi_metadata: MarketMetadata<KalshiExchange>,
+    ) -> Self {
         Self {
             poly_metadata,
             kalshi_metadata,
@@ -123,11 +124,11 @@ impl RiskLayer<ActionEnter> {
         if minutes_remaining <= self.min_minutes_to_expiry {
             return false;
         }
-        
+
         // 3. Unwrap Prices (Safe because of has_fresh_data check above)
         let k_price = self.last_kalshi_underlying_price.unwrap();
         let pm_price = self.last_poly_underlying_price.unwrap();
-        
+
         let k_strike = self.kalshi_metadata.strike_price;
         let pm_strike = self.poly_metadata.strike_price;
 
@@ -137,16 +138,16 @@ impl RiskLayer<ActionEnter> {
         // --- CHECK A: Underlying Asset Price Divergence ---
         // If the live price of BTC on Poly vs Kalshi is too different, the markets are disconnected.
         let price_diff = (pm_price - k_price).abs();
-        
+
         // Avoid division by zero (though unlikely for BTC/ETH)
         if !pm_price.is_zero() {
             let price_deviation = price_diff / pm_price;
 
             if price_deviation > max_deviation {
                 warn!(
-                    "🛑 RISK REJECT: Underlying prices diverged. Poly: {}, Kalshi: {}, Diff: {:.4}%", 
-                    pm_price, 
-                    k_price, 
+                    "🛑 RISK REJECT: Underlying prices diverged. Poly: {}, Kalshi: {}, Diff: {:.4}%",
+                    pm_price,
+                    k_price,
                     price_deviation * Decimal::from(100)
                 );
                 return false;
@@ -163,15 +164,15 @@ impl RiskLayer<ActionEnter> {
 
             if strike_deviation > max_deviation {
                 warn!(
-                    "🛑 RISK REJECT: Strike prices mismatch. Poly: {}, Kalshi: {}, Diff: {:.4}%", 
-                    pm_strike, 
-                    k_strike, 
+                    "🛑 RISK REJECT: Strike prices mismatch. Poly: {}, Kalshi: {}, Diff: {:.4}%",
+                    pm_strike,
+                    k_strike,
                     strike_deviation * Decimal::from(100)
                 );
                 return false;
             }
         }
-        
+
         // If we passed all checks, it is safe to enter
         true
     }
@@ -203,19 +204,19 @@ impl RiskLayer<ActionExit> {
         if seconds_remaining < unwind_secs {
             if poly_dist_pct > pct_0_05 && kalshi_dist_pct > pct_0_05 {
                 // correct usage with the tracing crate
-                info!( "🛡️ Risk Layer (Exit): Holding. Price is safely away from strike.");
+                info!("🛡️ Risk Layer (Exit): Holding. Price is safely away from strike.");
                 info!(%seconds_remaining, %poly_dist_pct, %kalshi_dist_pct, %poly_strike, %kalshi_strike, %poly_price, %kalshi_price);
-                
+
                 return false;
             } else {
                 info!(
                     "[ALERT] We should unwind. less than {} seconds left and price is within 0.05% of strike.",
                     unwind_secs,
                 );
-                
+
                 info!(%seconds_remaining, %poly_dist_pct, %kalshi_dist_pct, %poly_strike, %kalshi_strike, %poly_price, %kalshi_price);
-                
-                return true
+
+                return true;
             }
         }
 
