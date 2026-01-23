@@ -52,7 +52,7 @@ pub struct OrderbookProcessor {
 
     pub position_count: u32,
     // Channels
-    event_rx: Option<mpsc::Receiver<OrderbookChangeEvent>>,
+    event_rx: mpsc::Receiver<OrderbookChangeEvent>,
     event_tx: mpsc::Sender<OrderbookChangeEvent>,
 
     executor_tx: mpsc::Sender<Opportunity>,
@@ -102,7 +102,7 @@ impl OrderbookProcessor {
             pm_orderbook_no: Orderbook::new(),
             k_orderbook_yes: Orderbook::new(),
             k_orderbook_no: Orderbook::new(),
-            event_rx: Some(event_rx),
+            event_rx,
             event_tx,
             oracle_rx,
         };
@@ -116,50 +116,44 @@ impl OrderbookProcessor {
     }
 
     /// Consumes the processor and spawns the event loop
-    pub fn start(mut self) -> JoinHandle<AppResult<()>> {
-        let mut event_rx = self.event_rx.take().expect("Event RX already taken");
+    pub async fn start(&mut self) -> AppResult<()> {
+        info!("📘 OrderbookProcessor started");
 
-        tokio::spawn(async move {
-            info!("📘 OrderbookProcessor started");
+        loop {
+            select! {
+                // --- Internal Orderbook Events ---
+                event = self.event_rx.recv() => {
+                    match event {
+                        Some(change) => self.handle_event(change).await,
+                        None => {
+                            warn!("Orderbook event channel closed");
+                            break;
+                        }
+                    }
+                    }
 
-            loop {
-                select! {
-                    // --- Internal Orderbook Events ---
-                    event = event_rx.recv() => {
-                        match event {
-                            Some(change) => self.handle_event(change).await,
-                            None => {
-                                warn!("Orderbook event channel closed");
-                                break;
+                    Ok(oracle_msg) = self.oracle_rx.recv() => {
+                        match oracle_msg {
+                            OracleUpdateEvent::Polymarket { price, .. } => {
+                                self.enter_risk_layer.update_poly_price(price);
+                            }
+                            OracleUpdateEvent::Kalshi { price, .. } => {
+                                self.enter_risk_layer.update_kalshi_price(price);
                             }
                         }
-                        }
-
-                        Ok(oracle_msg) = self.oracle_rx.recv() => {
-                            match oracle_msg {
-                                OracleUpdateEvent::Polymarket { price, .. } => {
-                                    self.enter_risk_layer.update_poly_price(price);
-                                }
-                                OracleUpdateEvent::Kalshi { price, .. } => {
-                                    self.enter_risk_layer.update_kalshi_price(price);
-                                }
-                            }
-                        }
-                }
+                    }
             }
+        }
 
-            info!("📘 OrderbookProcessor stopped");
-            Ok(())
-        })
+        info!("📘 OrderbookProcessor stopped");
+        Ok(())
     }
 
     async fn handle_event(&mut self, event: OrderbookChangeEvent) {
         match event {
             OrderbookChangeEvent::Polymarket(bba) => self.handle_polymarket_update(bba).await,
             OrderbookChangeEvent::KalshiDelta(delta) => self.handle_kalshi_update(delta).await,
-            OrderbookChangeEvent::KalshiSnapshot(snapshot) => {
-                self.handle_kalshi_snapshot(snapshot).await
-            }
+            OrderbookChangeEvent::KalshiSnapshot(snapshot) => self.handle_kalshi_snapshot(snapshot).await
         }
 
         // Check for arbitrage immediately after update

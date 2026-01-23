@@ -1,10 +1,12 @@
 // File: service/src/strategy/risk/layer.rs
 
-use crate::market::metadata::MarketMetadata;
+use crate::kalshi::service::KalshiService;
+use crate::{market::metadata::MarketMetadata, polymarket::clob::PolymarketClobService};
 use crate::strategy::market::Opportunity;
 use chrono::{DateTime, Timelike, Utc};
 use rust_decimal::Decimal;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use tracing::{info, warn};
 
 // --- Action Markers ---
@@ -14,7 +16,7 @@ pub struct ActionEnter;
 #[derive(Clone, Debug)]
 pub struct ActionExit;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RiskLayer<Action> {
     // Static Metadata
     pub poly_metadata: MarketMetadata,
@@ -28,11 +30,16 @@ pub struct RiskLayer<Action> {
     pub last_kalshi_update: Option<DateTime<Utc>>,
 
     // Marker for the generic state
-    pub _marker: PhantomData<Action>,
+    _marker: PhantomData<Action>,
 
     // Config
     min_minutes_to_expiry: u32,
     max_positions: u32,
+}
+
+pub struct RiskLayerParams {
+    poly_metadata: MarketMetadata,
+    kalshi_metadata: MarketMetadata,
 }
 
 // --- Common Implementation (Getters/Setters) ---
@@ -158,6 +165,8 @@ impl RiskLayer<ActionExit> {
                 );
                 
                 info!(%seconds_remaining, %poly_dist_pct, %kalshi_dist_pct, %poly_strike, %kalshi_strike, %poly_price, %kalshi_price);
+                
+                return true
             }
         }
 

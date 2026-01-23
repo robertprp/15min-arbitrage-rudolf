@@ -34,7 +34,6 @@ impl Default for ArbitrageProcessorConfig {
     }
 }
 
-#[derive(Clone)]
 pub struct ArbitrageProcessor {
     services: ServiceProvider,
 
@@ -44,7 +43,7 @@ pub struct ArbitrageProcessor {
     pm_exec_no: Arc<PolymarketExecutionService>,
     kalshi: Arc<KalshiService>,
 
-    opportunity_rx: Arc<RwLock<Option<mpsc::Receiver<Opportunity>>>>,
+    opportunity_rx: mpsc::Receiver<Opportunity>,
     opportunity_tx: mpsc::Sender<Opportunity>,
 
     monitor_tx: mpsc::Sender<PairedPosition>,
@@ -87,7 +86,7 @@ impl ArbitrageProcessor {
             pm_exec_no,
             kalshi,
             monitor_tx,
-            opportunity_rx: Arc::new(RwLock::new(Some(rx))),
+            opportunity_rx: rx,
             opportunity_tx: tx,
             last_action: Arc::new(RwLock::new(Instant::now())),
             cooldown: Duration::from_secs(5),
@@ -98,28 +97,15 @@ impl ArbitrageProcessor {
         self.opportunity_tx.clone()
     }
 
-    pub async fn start(&self) -> JoinHandle<AppResult<()>> {
-        let mut rx = self
-            .opportunity_rx
-            .write()
-            .await
-            .take()
-            .expect("Opportunity RX already taken");
+    pub async fn start(&mut self) {
+        info!("⚡ ArbitrageProcessor started");
 
-        let processor = self.clone();
-
-        tokio::spawn(async move {
-            info!("⚡ ArbitrageProcessor started");
-
-            loop {
-                match rx.recv().await {
-                    Some(opp) => processor.process_opportunity(opp).await,
-                    None => break,
-                }
+        loop {
+            match self.opportunity_rx.recv().await {
+                Some(opp) => self.process_opportunity(opp).await,
+                None => break,
             }
-
-            Ok(())
-        })
+        }
     }
 
     async fn process_opportunity(&self, opp: Opportunity) {
@@ -158,8 +144,10 @@ impl ArbitrageProcessor {
         // Add tiny markup for FOK safety
         let poly_limit_price = opp.poly_price;
 
+        info!("Buying Poly at price {} and amount of shares {}", poly_limit_price, quantity_dec);
+        info!("Buying Kalshi at price {} and amount of shares {}", opp.kalshi_price_cents, quantity_dec);
         let poly_order_res =
-            exec_service.build_market_order(poly_limit_price, quantity_dec, Side::Buy);
+            exec_service.build_market_order_with_shares(poly_limit_price, quantity_dec, Side::Buy);
 
         let poly_order = match poly_order_res {
             Ok(o) => o,
