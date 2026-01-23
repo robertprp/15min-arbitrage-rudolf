@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, time::Duration};
 
 use anyhow::Context;
 use futures::StreamExt;
@@ -24,6 +24,7 @@ use service::{
         orderbook::processor::OrderbookProcessor,
     },
 };
+use tokio::time::sleep;
 use tracing::{error, info, warn};
 
 pub struct RunMonitorParams {
@@ -100,12 +101,13 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     let manager = PositionManager::new(PositionManagerParams {
         poly_metadata: pm_metadata,
         kalshi_metadata,
+        clob_service: pm_clob.clone(),
         kalshi_service: kalshi.clone(),
         oracle_rx: manager_oracle_rx,
     });
     let manager_tx = manager.get_sender().clone();
 
-    let arbitrage_processor = ArbitrageProcessor::new(
+    let mut arbitrage_processor = ArbitrageProcessor::new(
         services.clone(),
         asset_yes,
         asset_no,
@@ -115,7 +117,7 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
 
     let executor_tx = arbitrage_processor.get_sender().clone();
 
-    let orderbook_processor = OrderbookProcessor::new(
+    let mut orderbook_processor = OrderbookProcessor::new(
         services.clone(),
         asset_yes,
         asset_no,
@@ -132,15 +134,22 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         oracle.run().await;
     });
 
-    // Start Position Manager
+    sleep(Duration::from_secs(2)).await;
     tokio::spawn(async move {
         manager.start().await;
     });
+    
+    sleep(Duration::from_secs(1)).await;
 
-    let _arb_handle = arbitrage_processor.start().await;
+    tokio::spawn(async move {
+        arbitrage_processor.start().await;
+    });
+    
+    sleep(Duration::from_secs(2)).await;
+
     let event_tx = orderbook_processor.get_event_sender();
 
-    let _ob_handle = tokio::spawn(async move {
+    tokio::spawn(async move {
         if let Err(e) = orderbook_processor.start().await {
             error!("Orderbook Processor Error: {}", e);
         }

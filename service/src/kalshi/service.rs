@@ -4,6 +4,7 @@ use anyhow::Context;
 use async_trait::async_trait;
 use chrono::{Timelike, Utc};
 use chrono_tz::America::New_York;
+use colorful::ExtraColorInterface;
 use kalshi_rs::{
     Account, KalshiClient, KalshiWebsocketClient,
     events::models::GetEventResponse,
@@ -98,22 +99,20 @@ impl KalshiService {
             yes_price: None,
             yes_price_dollars: None,
         };
+        
+        let extra_cents: u32 = 2;
 
         if side.eq("yes") {
-            req.yes_price = Some(price_cents.into());
-        } else {
-            req.no_price = Some(price_cents.into());
-        }
-
-        if action.eq("buy") {
-            // TODO fix this bc maybe price_cents is less than 3.
-            let cents = 2;
-            if side.eq("yes") {
-                // Reduce few cents yes_price to make sure we are filled
-                req.yes_price = Some((price_cents + cents).into());
+            if action.eq("buy") {
+                req.yes_price = Some((price_cents + extra_cents).into());
             } else {
-                // Reduce few cents no_price to make sure we are filled
-                req.no_price = Some((price_cents + cents).into());
+                req.yes_price = Some((price_cents - extra_cents).into());
+            }
+        } else {
+            if action.eq("buy") {
+                req.no_price = Some((price_cents + extra_cents).into());
+            } else {
+                req.no_price = Some((price_cents - extra_cents).into());
             }
         }
 
