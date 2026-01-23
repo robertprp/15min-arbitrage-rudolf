@@ -161,7 +161,6 @@ impl OrderbookProcessor {
     }
 
     async fn check_opportunities(&mut self) {
-        // Direct access, no locks needed
         let pm_yes = &self.pm_orderbook_yes;
         let pm_no = &self.pm_orderbook_no;
         let k_yes = &self.k_orderbook_yes;
@@ -194,20 +193,21 @@ impl OrderbookProcessor {
                         "🚀 Arb Opportunity Found (A): Cost {} (P: {} + K_No: {})",
                         total_cost, p_ask, k_ask_no
                     );
+                    
                     if let Err(err) = self.executor_tx.send(opp).await {
                         error!("Failed to send opportunity: {}", err);
                     } else {
                         self.position_count += 1;
-
-                        return;
                     }
+                    
+                    return;
                 }
             }
         }
 
         if let (Some(p_ask), Some(k_ask_yes)) = (pm_no.best_ask(), k_yes.best_ask()) {
             let total_cost = p_ask + k_ask_yes;
-
+            
             if total_cost + self.min_edge < one {
                 let k_cents = (k_ask_yes * one_hundred).ceil().to_u32().unwrap_or(99);
 

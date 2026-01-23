@@ -194,12 +194,6 @@ impl PolymarketExecutionService {
 
         Ok(signable_order)
     }
-    
-    pub fn send_market_order(&self, poly_limit_price: Decimal, quantity_dec: Decimal, side: Side) -> AppResult<()> {
-        let builder = self.clob.client.market_order()
-            .build();
-        Ok(())
-    }
 
     /// Build a market order where the size is specified in SHARES (for both Buy and Sell)
         pub fn build_market_order_with_shares(

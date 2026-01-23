@@ -1,3 +1,5 @@
+// File: src/monitor.rs
+
 use std::{str::FromStr, time::Duration};
 
 use anyhow::Context;
@@ -17,7 +19,6 @@ use service::{
     },
     services::ServiceProvider,
     strategy::{
-        arbitrage::ArbitrageProcessor,
         events::OrderbookChangeEvent,
         manager::{PositionManager, PositionManagerParams},
         oracle::MarketDataOracle,
@@ -94,29 +95,25 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     let pm_metadata = MarketMetadata::from_polymarket(pm_market.clone(), strike_price)?;
     let kalshi_metadata = MarketMetadata::from_kalshi(kalshi_event)?;
 
+    // 3. Setup Oracle
     let (oracle, arb_oracle_rx) = MarketDataOracle::new(services.clone(), symbol.clone());
-
     let manager_oracle_rx = oracle.subscribe();
 
+    // 4. Setup Position Manager (Now handles Execution)
     let manager = PositionManager::new(PositionManagerParams {
+        config_service: config_service.clone(),
         poly_metadata: pm_metadata,
         kalshi_metadata,
         clob_service: pm_clob.clone(),
         kalshi_service: kalshi.clone(),
         oracle_rx: manager_oracle_rx,
-    });
-    let manager_tx = manager.get_sender().clone();
+        poly_token_yes: asset_yes,
+        poly_token_no: asset_no,
+    }).await?; // await because new is async now
 
-    let mut arbitrage_processor = ArbitrageProcessor::new(
-        services.clone(),
-        asset_yes,
-        asset_no,
-        manager_tx,
-    )
-    .await?;
+    let executor_tx = manager.get_sender().clone();
 
-    let executor_tx = arbitrage_processor.get_sender().clone();
-
+    // 5. Setup Orderbook Processor (Feeds the Manager)
     let mut orderbook_processor = OrderbookProcessor::new(
         services.clone(),
         asset_yes,
@@ -130,22 +127,16 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
     )
     .await?;
 
+    // 6. Spawn Tasks
     tokio::spawn(async move {
         oracle.run().await;
     });
 
-    sleep(Duration::from_secs(2)).await;
     tokio::spawn(async move {
         manager.start().await;
     });
-    
-    sleep(Duration::from_secs(1)).await;
 
-    tokio::spawn(async move {
-        arbitrage_processor.start().await;
-    });
-    
-    sleep(Duration::from_secs(2)).await;
+    sleep(Duration::from_secs(1)).await;
 
     let event_tx = orderbook_processor.get_event_sender();
 
@@ -155,11 +146,7 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         }
     });
 
-    // Channel to feed data into the Orderbook Processor
-
-    // 5. Subscribe to Data Streams
-
-    // Polymarket Subscription
+    // 7. Subscribe to Market Data
     let mut pm_stream = pm_ws
         .subscribe_feed(vec![asset_yes, asset_no], vec![condition_id])?
         .boxed();
@@ -169,53 +156,51 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
 
     info!("👂 Listening for Market Data...");
 
-    // 6. Main Ingestion Loop
+    // 8. Main Ingestion Loop
     loop {
         tokio::select! {
             // --- Polymarket WebSocket Events ---
             Some(msg_result) = pm_stream.next() => {
                 match msg_result {
                     Ok(PolymarketFeedUpdate::BestBidAsk(bba)) => {
-                        // Forward BBA updates to the Orderbook Processor
                         if let Err(e) = event_tx.send(OrderbookChangeEvent::Polymarket(bba)).await {
                             error!("Failed to send Poly update to processor: {:?}", e);
-                            break; // Channel closed, critical failure
+                            break;
                         }
                     }
                     Ok(PolymarketFeedUpdate::Trade(_trade)) => {
-                        // Optional: Handle trades for volume analysis or fill tracking
+                        // Optional: Handle trades
                     }
                     Err(e) => {
                         warn!("Polymarket WS Stream Error: {:?}", e);
-                        // In a production bot, implement reconnection logic here
+                        // Implement reconnection logic in production
                     }
                 }
-                }
+            }
 
-                msg = kalshi.ws_client.next_message() => {
-                    match msg {
-                        Ok(KalshiSocketMessage::OrderbookDelta(delta)) => {
-                            if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiDelta(delta.msg)).await {
-                                error!("Failed to send Kalshi update to processor: {:?}", e);
-                                break;
-                            }
-                        }
-                        Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
-                            info!("📸 Received Kalshi Snapshot for ticker: {}", snapshot.msg.market_ticker);
-
-                            if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiSnapshot(snapshot.msg)).await {
-                                error!("Failed to send Kalshi snapshot to processor: {:?}", e);
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            error!("Kalshi WS Error: {:?}", e);
-                            // In production, trigger reconnection
+            // --- Kalshi WebSocket Events ---
+            msg = kalshi.ws_client.next_message() => {
+                match msg {
+                    Ok(KalshiSocketMessage::OrderbookDelta(delta)) => {
+                        if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiDelta(delta.msg)).await {
+                            error!("Failed to send Kalshi update to processor: {:?}", e);
                             break;
                         }
-                        _ => {}
                     }
+                    Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
+                        info!("📸 Received Kalshi Snapshot for ticker: {}", snapshot.msg.market_ticker);
+                        if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiSnapshot(snapshot.msg)).await {
+                            error!("Failed to send Kalshi snapshot to processor: {:?}", e);
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Kalshi WS Error: {:?}", e);
+                        break;
+                    }
+                    _ => {}
                 }
+            }
         }
     }
 
