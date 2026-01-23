@@ -36,11 +36,6 @@ pub struct RiskLayer<Action> {
     max_positions: u32,
 }
 
-pub struct RiskLayerParams {
-    poly_metadata: MarketMetadata<PolymarketExchange>,
-    kalshi_metadata: MarketMetadata<KalshiExchange>,
-}
-
 // --- Common Implementation (Getters/Setters) ---
 impl<A> RiskLayer<A> {
     pub fn new(
@@ -56,7 +51,7 @@ impl<A> RiskLayer<A> {
             last_kalshi_update: None,
             _marker: PhantomData,
             min_minutes_to_expiry: 2,
-            max_positions: 2,
+            max_positions: 5,
         }
     }
 
@@ -132,48 +127,42 @@ impl RiskLayer<ActionEnter> {
         let k_strike = self.kalshi_metadata.strike_price;
         let pm_strike = self.poly_metadata.strike_price;
 
-        // 4. Define Threshold (0.04% = 0.0004)
-        let max_deviation = Decimal::new(4, 4); // 0.0004
+        // 4. Define Threshold (0.06% = 0.0005)
+        // This allows for small tracking errors between the two indices
+        // Max deviation is 0.06%
+        let max_deviation = Decimal::new(6, 4); 
 
-        // --- CHECK A: Underlying Asset Price Divergence ---
-        // If the live price of BTC on Poly vs Kalshi is too different, the markets are disconnected.
-        let price_diff = (pm_price - k_price).abs();
+        // let strike_price_dist = (pm_strike - k_strike).abs();
+        // let price_dist = (pm_price - k_price).abs();
+        // Distance = Underlying - Strike
+        let pm_dist = pm_price - pm_strike;
+        let k_dist = k_price - k_strike;
 
-        // Avoid division by zero (though unlikely for BTC/ETH)
+        // The "Net Skew" represents how differently the two markets view the asset's position relative to the strike.
+        let net_skew = (pm_dist - k_dist).abs();
+
         if !pm_price.is_zero() {
-            let price_deviation = price_diff / pm_price;
+            let skew_ratio = net_skew / pm_price;
 
-            if price_deviation > max_deviation {
+            if skew_ratio > max_deviation {
                 warn!(
-                    "🛑 RISK REJECT: Underlying prices diverged. Poly: {}, Kalshi: {}, Diff: {:.4}%",
-                    pm_price,
-                    k_price,
-                    price_deviation * Decimal::from(100)
+                    "🛑 RISK REJECT: Market correlation broken. Poly Dist: {}, Kalshi Dist: {}, Skew: {:.4}%",
+                    pm_dist,
+                    k_dist,
+                    skew_ratio * Decimal::from(100)
                 );
+                
+                // Optional: Log the raw values for debugging
+                info!(
+                   "Risk Context -> PM(S: {}, K: {}), Kalshi(S: {}, K: {})", 
+                   pm_price, pm_strike, k_price, k_strike
+                );
+
                 return false;
             }
         }
 
-        // --- CHECK B: Strike Price Divergence ---
-        // If we are arbitraging Strike 90000 vs Strike 90050, we need to be careful.
-        // Ideally, these should be identical, but we allow the small 0.04% buffer just in case.
-        let strike_diff = (pm_strike - k_strike).abs();
-
-        if !pm_strike.is_zero() {
-            let strike_deviation = strike_diff / pm_strike;
-
-            if strike_deviation > max_deviation {
-                warn!(
-                    "🛑 RISK REJECT: Strike prices mismatch. Poly: {}, Kalshi: {}, Diff: {:.4}%",
-                    pm_strike,
-                    k_strike,
-                    strike_deviation * Decimal::from(100)
-                );
-                return false;
-            }
-        }
-
-        // If we passed all checks, it is safe to enter
+        // If we passed the check, it is safe to enter
         true
     }
 }
@@ -210,8 +199,9 @@ impl RiskLayer<ActionExit> {
                 return false;
             } else {
                 info!(
-                    "[ALERT] We should unwind. less than {} seconds left and price is within 0.05% of strike.",
+                    "[ALERT] We should unwind. less than {} seconds left and price is within {}% of strike.",
                     unwind_secs,
+                    pct_0_05 * Decimal::ONE_HUNDRED
                 );
 
                 info!(%seconds_remaining, %poly_dist_pct, %kalshi_dist_pct, %poly_strike, %kalshi_strike, %poly_price, %kalshi_price);

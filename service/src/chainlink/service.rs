@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use anyhow::{Context, anyhow};
 use async_trait::async_trait;
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use futures::Stream;
 use lib::AppResult;
 use polymarket_client_sdk::rtds::{ChainlinkPrice, Client};
@@ -10,9 +10,9 @@ use reqwest::Client as HttpClient;
 use rust_decimal::Decimal;
 
 use crate::{
-    chainlink::types::{CHAINLINK_BTC_PRICE_FEED_ID, ChainlinkResponse, ToChainlinkAsset},
+    chainlink::types::{ChainlinkResponse, ToChainlinkAsset, CHAINLINK_BTC_PRICE_FEED_ID},
     market::symbols::Min15Symbols,
-    services::{ServiceFactory, ServiceProvider},
+    services::{ServiceFactory, ServiceProvider}, utils::get_floored_15min_timestamp,
 };
 
 pub struct ChainLinkService {
@@ -74,8 +74,15 @@ impl ChainLinkService {
         // Format: "2026-01-20T22:00:00+00:00"
         let dt = DateTime::parse_from_rfc3339(&last_node.time_bucket)
             .context("Failed to parse Chainlink timestamp")?;
+        
         let timestamp = dt.timestamp();
-
+        let floored_timestamp = get_floored_15min_timestamp(Utc::now().timestamp());
+        
+        if timestamp != floored_timestamp {
+            let msg = format!("Chainlink timestamp {} and current floored timestamp {} do not match", timestamp, floored_timestamp);
+            return Err(anyhow!(msg));
+        }
+        
         // 2. Parse Price
         // Value comes in as 18 decimals (Wei), e.g., "90176452620396700000000"
         let raw_open =
