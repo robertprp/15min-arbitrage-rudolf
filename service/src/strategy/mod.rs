@@ -1,3 +1,5 @@
+// File: service/src/strategy/mod.rs
+
 pub mod book;
 pub mod events;
 pub mod handler;
@@ -6,19 +8,18 @@ pub mod market;
 pub mod oracle;
 pub mod orderbook;
 pub mod risk;
+pub mod state;
 
 use kalshi_rs::websocket::models::UserFillMessage;
 use polymarket_client_sdk::clob::ws::TradeMessage;
+use polymarket_client_sdk::types::U256;
 use rust_decimal::Decimal;
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
-use crate::market::exchange::Exchange;
-
 #[derive(Debug, Clone)]
 pub struct Order {
-    pub price_cents: u32, // 47c
-    pub shares: u32,      // 1 shares.
-                          // total cost 0.47$
+    pub price_cents: u32, 
+    pub shares: u32,      
 }
 
 #[derive(Debug)]
@@ -35,37 +36,91 @@ pub struct ArbSizing {
     pub kalshi_cost_usd: Decimal,
 }
 
-/// Tracks the state of an active arbitrage position
+/// Trait to unify access to position details
+pub trait PositionProvider {
+    fn get_id(&self) -> String;
+    fn get_shares(&self) -> Decimal;
+    fn get_side(&self) -> String;
+    fn get_timestamp(&self) -> i64;
+    fn get_price(&self) -> Decimal;
+}
+
+/// Specific implementation for Polymarket
 #[derive(Debug, Clone)]
-pub struct Position {
-    pub exchange: Exchange, // "polymarket" or "kalshi"
-    pub order_id: String,   // Token ID (Poly) or Ticker (Kalshi)
-    pub side: String,       // "yes"/"no"
+pub struct PolymarketPosition {
+    pub order_id: String,
+    pub token_id: U256,
+    pub side: String, // "yes" or "no"
+    pub shares: Decimal,
+    pub price: Decimal,
     pub timestamp: i64,
 }
 
+impl PositionProvider for PolymarketPosition {
+    fn get_id(&self) -> String {
+        self.order_id.clone()
+    }
+
+    fn get_shares(&self) -> Decimal {
+        self.shares
+    }
+
+    fn get_side(&self) -> String {
+        self.side.clone()
+    }
+
+    fn get_timestamp(&self) -> i64 {
+        self.timestamp
+    }
+    
+    fn get_price(&self) -> Decimal {
+        self.price
+    }
+}
+
+/// Specific implementation for Kalshi
+#[derive(Debug, Clone)]
+pub struct KalshiPosition {
+    pub order_id: String,
+    pub ticker: String,
+    pub side: String, // "yes" or "no"
+    pub shares: u32,
+    pub price_cents: u32,
+    pub timestamp: i64,
+}
+
+impl PositionProvider for KalshiPosition {
+    fn get_id(&self) -> String {
+        self.order_id.clone()
+    }
+
+    fn get_shares(&self) -> Decimal {
+        Decimal::from(self.shares)
+    }
+
+    fn get_side(&self) -> String {
+        self.side.clone()
+    }
+
+    fn get_timestamp(&self) -> i64 {
+        self.timestamp
+    }
+    
+    fn get_price(&self) -> Decimal {
+        Decimal::from(self.price_cents) / Decimal::from(100)
+    }
+}
+
+/// Tracks the state of an active arbitrage position (Holds explicit legs)
 #[derive(Debug, Clone)]
 pub struct PairedPosition {
-    pub positions: [Position; 2],
+    pub polymarket: PolymarketPosition,
+    pub kalshi: KalshiPosition,
 }
 
 impl PairedPosition {
-    pub fn new(poly: Position, kalshi: Position) -> Self {
-        Self {
-            positions: [poly, kalshi],
-        }
-    }
-
-    pub fn get_poly(&self) -> Option<&Position> {
-        self.positions
-            .iter()
-            .find(|p| p.exchange == Exchange::Polymarket)
-    }
-
-    pub fn get_kalshi(&self) -> Option<&Position> {
-        self.positions
-            .iter()
-            .find(|p| p.exchange == Exchange::Kalshi)
+    pub fn new(polymarket: PolymarketPosition, kalshi: KalshiPosition) -> Self {
+        Self { polymarket, kalshi }
     }
 }
 
@@ -79,7 +134,6 @@ impl Order {
 
     pub fn price_usd(&self) -> Decimal {
         let value = (self.price_cents as f64 / 100.0) * self.shares as f64;
-
         Decimal::from_f64(value).unwrap()
     }
 }

@@ -1,6 +1,7 @@
 // File: service/src/strategy/risk/layer.rs
 
 use crate::kalshi::service::KalshiService;
+use crate::market::exchange::{KalshiExchange, PolymarketExchange};
 use crate::{market::metadata::MarketMetadata, polymarket::clob::PolymarketClobService};
 use crate::strategy::market::Opportunity;
 use chrono::{DateTime, Timelike, Utc};
@@ -19,8 +20,8 @@ pub struct ActionExit;
 #[derive(Clone)]
 pub struct RiskLayer<Action> {
     // Static Metadata
-    pub poly_metadata: MarketMetadata,
-    pub kalshi_metadata: MarketMetadata,
+    pub poly_metadata: MarketMetadata<PolymarketExchange>,
+    pub kalshi_metadata: MarketMetadata<KalshiExchange>,
 
     // Dynamic State (Underlying Asset Prices)
     pub last_poly_underlying_price: Option<Decimal>,
@@ -38,13 +39,13 @@ pub struct RiskLayer<Action> {
 }
 
 pub struct RiskLayerParams {
-    poly_metadata: MarketMetadata,
-    kalshi_metadata: MarketMetadata,
+    poly_metadata: MarketMetadata<PolymarketExchange>,
+    kalshi_metadata: MarketMetadata<KalshiExchange>,
 }
 
 // --- Common Implementation (Getters/Setters) ---
 impl<A> RiskLayer<A> {
-    pub fn new(poly_metadata: MarketMetadata, kalshi_metadata: MarketMetadata) -> Self {
+    pub fn new(poly_metadata: MarketMetadata<PolymarketExchange>, kalshi_metadata: MarketMetadata<KalshiExchange>) -> Self {
         Self {
             poly_metadata,
             kalshi_metadata,

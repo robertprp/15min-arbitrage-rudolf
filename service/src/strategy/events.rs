@@ -24,11 +24,6 @@ pub enum PriceChangeEvent {
 }
 
 #[derive(Clone, Debug)]
-pub enum PositionUpdateEvent {
-    Created(PairedPosition),
-}
-
-#[derive(Clone, Debug)]
 pub enum OracleUpdateEvent {
     Polymarket { price: Decimal, timestamp: i64 },
     Kalshi { price: Decimal, timestamp: i64 },
