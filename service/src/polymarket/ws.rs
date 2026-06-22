@@ -3,8 +3,8 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lib::AppResult;
 use polymarket_client_sdk::{
-    auth::{Credentials, Normal, state::Authenticated},
-    clob::ws::{BestBidAsk, Client, TradeMessage},
+    auth::{state::Authenticated, Credentials, Normal},
+    clob::ws::{BestBidAsk, BookUpdate, Client, TradeMessage},
     types::{Address, B256, U256},
 };
 use std::str::FromStr;
@@ -19,6 +19,7 @@ use crate::{
 #[derive(Debug)]
 pub enum PolymarketFeedUpdate {
     BestBidAsk(BestBidAsk),
+    // Orderbook(BookUpdate),
     Trade(TradeMessage),
 }
 
