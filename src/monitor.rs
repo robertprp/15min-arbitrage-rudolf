@@ -1,38 +1,106 @@
-// src/monitor.rs
-use std::str::FromStr;
-use std::time::Duration;
+// File: src/monitor.rs
 
+use std::{str::FromStr, time::Duration};
+
+use anyhow::Context;
 use futures::StreamExt;
 use kalshi_rs::websocket::models::KalshiSocketMessage;
 use lib::AppResult;
-use polymarket_client_sdk::{clob::types::Side, types::U256};
 use rust_decimal::Decimal;
-use rust_decimal::prelude::ToPrimitive;
 use service::{
     config::service::ConfigService,
     kalshi::service::KalshiService,
-    market::Min15Symbols,
+    market::{metadata::MarketMetadata, symbols::Min15Symbols},
     polymarket::{
         clob::PolymarketClobService,
-        fast_execution::PolyFastExecution,
         gamma::PolymarketGammaService,
         ws::{PolymarketFeedUpdate, PolymarketWebSocketService},
     },
     services::ServiceProvider,
     strategy::{
-        handler::PositionHandler, market::{DualExchangeMarket, ExitOpportunity, Opportunity}, ArbSizing, FillEvent, Order, PairedPosition, Position
+        events::OrderbookChangeEvent,
+        manager::{PositionManager, PositionManagerParams},
+        oracle::MarketDataOracle,
+        orderbook::processor::OrderbookProcessor,
+        state::MarketState,
     },
+    utils::get_duration_until_next_window,
+};
+use tokio::{
+    task::JoinHandle,
+    time::{sleep, timeout},
 };
 use tracing::{error, info, warn};
+
+use crate::guard::TaskGuard;
 
 pub struct RunMonitorParams {
     pub services: ServiceProvider,
     pub min_entry_edge_cents: f64,
 }
 
+/// The Main Entry Point: Loops forever, handling session transitions
 pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
-    let services = params.services;
-    // 1. Setup Services & Config
+    info!("🔄 Starting Continuous Monitor Loop");
+
+    loop {
+        // 1. Calculate how long to run this session
+        let duration_left = get_duration_until_next_window();
+
+        // If we are extremely close to the edge (e.g. < 5 seconds),
+        // wait for the next window to start to avoid setting up a dying market.
+        if duration_left.as_secs() < 10 {
+            info!(
+                "⏳ Too close to window close ({}s). Waiting for next window...",
+                duration_left.as_secs()
+            );
+            sleep(duration_left + Duration::from_secs(4)).await;
+            continue;
+        }
+
+        info!(
+            "⏱️  Starting Session. Time remaining in window: {:?}",
+            duration_left
+        );
+
+        let session_result = timeout(
+            duration_left,
+            monitor_single_window(params.services.clone(), params.min_entry_edge_cents),
+        )
+        .await;
+
+        // 3. Handle End of Window
+        match session_result {
+            Ok(result) => {
+                // If the function returned Early (Ok), it might have crashed or finished unexpectedly
+                if let Err(e) = result {
+                    error!("❌ Session crashed: {:?}. Restarting in 5s...", e);
+                    sleep(Duration::from_secs(5)).await;
+                }
+            }
+            Err(_) => {
+                // Timeout elapsed -> This is the expected behavior!
+                info!("🏁 Window Closed. Shutting down session and reinitializing...");
+                // Add a small buffer to ensure we cross the time boundary for the ticker generators
+                sleep(Duration::from_secs(2)).await;
+            }
+        }
+
+        // Loop repeats, creating fresh state, managers, and processors.
+    }
+}
+
+/// The Logic for a Single 15-Minute Window
+async fn monitor_single_window(
+    services: ServiceProvider,
+    min_entry_edge_cents: f64,
+) -> AppResult<()> {
+    // 0. Initialize Task Guard to kill tasks on return/timeout
+    let mut task_guard = TaskGuard { handles: vec![] };
+
+    let config_service = services.get_service_unchecked::<ConfigService>().await;
+
+    // 1. Retrieve Services
     let pm_gamma = services
         .get_service_unchecked::<PolymarketGammaService>()
         .await;
@@ -43,200 +111,176 @@ pub async fn run_monitor(params: RunMonitorParams) -> AppResult<()> {
         .get_service_unchecked::<PolymarketClobService>()
         .await;
     let kalshi = services.get_service_unchecked::<KalshiService>().await;
-    let config_service = services.get_service_unchecked::<ConfigService>().await;
 
+    // 2. Configuration & Market Discovery
     let symbol = Min15Symbols::BTC;
-    let edge_decimal = Decimal::from_str(&params.min_entry_edge_cents.to_string()).unwrap();
+    let edge_decimal =
+        Decimal::from_str(&min_entry_edge_cents.to_string()).context("Invalid edge decimal")?;
 
-    // 2. Setup Market Data
+    info!("🔎 Discovering Markets for {:?}...", symbol);
+
+    // Fetch Polymarket Details (Will fetch based on *current* timestamp)
     let pm_market = pm_gamma
         .get_current_15min_market_by_symbol(symbol.clone())
         .await?;
+
     let pm_tokens = pm_market
         .clob_token_ids
-        .ok_or_else(|| anyhow::anyhow!("No CLOB tokens"))?;
-    let (asset_yes, asset_no) = (pm_tokens[0], pm_tokens[1]);
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("No CLOB tokens found for Polymarket event"))?;
 
-    let mut pm_stream = pm_ws
-        .subscribe_feed(
-            vec![asset_yes, asset_no],
-            vec![pm_market.condition_id.unwrap()],
-        )?
-        .boxed();
+    let (asset_yes, asset_no) = (
+        *pm_tokens.first().context("Missing Poly Asset 0")?,
+        *pm_tokens.get(1).context("Missing Poly Asset 1")?,
+    );
+    let condition_id = pm_market.condition_id.context("Missing Condition ID")?;
 
+    // Fetch Kalshi Details (Will fetch based on *current* timestamp)
     let kalshi_event = kalshi
         .get_current_15min_market_by_symbol(symbol.clone())
         .await?;
-    let market_id = kalshi_event.markets[0].ticker.clone();
-    let kalshi_ticker = market_id.clone();
-    
-    // 1. SUBSCRIBE WS
-    // Note: We expect an OrderbookSnapshot to arrive shortly after this
-    kalshi.subscribe_orderbook(market_id.clone()).await?;
-    kalshi.subscribe_fills().await?;
-    
-    // 3. Setup Strategy Components
-    let mut market = DualExchangeMarket::new(asset_yes, asset_no, kalshi_ticker.clone());
-    
-    // State flag to ensure we don't calculate arbs until we have the snapshot
-    let mut kalshi_snapshot_received = false;
 
-    let mut handler = PositionHandler::new();
-
-    // Execution Helpers
-    let poly_fast_yes = PolyFastExecution::new(&pm_clob, config_service.clone(), asset_yes).await?;
-    let poly_fast_no = PolyFastExecution::new(&pm_clob, config_service.clone(), asset_no).await?;
-
-    let mut last_action = std::time::Instant::now();
-    let cooldown = Duration::from_secs(5);
+    let kalshi_event_ticker = kalshi_event.event.event_ticker.clone();
+    let kalshi_market_ticker = kalshi_event.markets[0].ticker.clone();
 
     info!(
-        "🚀 Monitor Started: Poly[{}|{}] vs Kalshi[{}]",
-        asset_yes, asset_no, kalshi_ticker
+        "✅ Markets Found:\n  - Poly: {} (Yes: {}, No: {})\n  - Kalshi: {}",
+        pm_market.slug.clone().unwrap_or_default(),
+        asset_yes,
+        asset_no,
+        kalshi_event_ticker
     );
 
+    let pm_metadata = MarketMetadata::new_poly(pm_market.clone()).await?;
+    let kalshi_metadata = MarketMetadata::new_kalshi(kalshi_event).await?;
+
+    // 3. Setup Oracle
+    // Note: MarketDataOracle is recreated here, so it connects to the specific chainlink/kalshi
+    // feeds relevant to this session if we were to customize them per window.
+    let (oracle, arb_oracle_rx) = MarketDataOracle::new(services.clone(), symbol.clone());
+    let manager_oracle_rx = oracle.subscribe();
+
+    // 4. Initialize FRESH Shared Market State
+    // This wipes the orderbooks from the previous window automatically
+    let market_state = MarketState::new();
+
+    // 5. Setup Position Manager (Fresh Risk Layer & State)
+    let manager = PositionManager::new(PositionManagerParams {
+        config_service: config_service.clone(),
+        poly_metadata: pm_metadata,
+        kalshi_metadata,
+        clob_service: pm_clob.clone(),
+        kalshi_service: kalshi.clone(),
+        oracle_rx: manager_oracle_rx,
+        poly_token_yes: asset_yes,
+        poly_token_no: asset_no,
+        market_state: market_state.clone(),
+    })
+    .await?;
+
+    let executor_tx = manager.get_sender().clone();
+
+    sleep(Duration::from_micros(500)).await;
+
+    // 6. Setup Orderbook Processor
+    let mut orderbook_processor = OrderbookProcessor::new(
+        services.clone(),
+        asset_yes,
+        asset_no,
+        pm_gamma.get_slug_by_symbol(symbol.clone()),
+        kalshi_event_ticker.clone(),
+        kalshi_market_ticker.clone(),
+        edge_decimal,
+        market_state,
+        executor_tx,
+        arb_oracle_rx,
+    )
+    .await?;
+
+    // 7. Spawn Tasks and Track Handles
+    
+    // Spawn Oracle
+    let oracle_handle = tokio::spawn(async move {
+        oracle.run().await;
+    });
+    task_guard.handles.push(oracle_handle);
+
+    // Spawn Manager
+    let manager_handle = tokio::spawn(async move {
+        manager.start().await;
+    });
+    task_guard.handles.push(manager_handle);
+
+    sleep(Duration::from_secs(1)).await;
+
+    let event_tx = orderbook_processor.get_event_sender();
+
+    // Spawn Processor
+    let processor_handle = tokio::spawn(async move {
+        if let Err(e) = orderbook_processor.start().await {
+            error!("Orderbook Processor Error: {}", e);
+        }
+    });
+    task_guard.handles.push(processor_handle);
+
+    sleep(Duration::from_secs(1)).await;
+
+    // 8. Subscribe to Market Data
+    // Polymarket WS
+    let mut pm_stream = pm_ws
+        .subscribe_feed(vec![asset_yes, asset_no], vec![condition_id])?
+        .boxed();
+
+    // Kalshi WS
+    kalshi.subscribe_orderbook(kalshi_market_ticker).await?;
+    kalshi.subscribe_fills().await?;
+
+    info!("👂 Listening for Market Data...");
+
+    // 9. Main Ingestion Loop
     loop {
         tokio::select! {
-            // --- Polymarket Stream ---
-            Some(msg) = pm_stream.next() => {
-                match msg {
-                    Ok(PolymarketFeedUpdate::BestBidAsk(bba)) => market.update_poly(bba),
-                    Ok(PolymarketFeedUpdate::Trade(trade)) => handler.handle_fill(FillEvent::Poly(trade)),
-                    Err(e) => error!("Poly Stream Error: {:?}", e),
-                }
-                }
-
-                // --- Kalshi Stream ---
-                msg = kalshi.ws_client.next_message() => {
-                    match msg {
-                        Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
-                            // This replaces the REST initialization
-                            market.apply_kalshi_ws_snapshot(snapshot.msg);
-                            kalshi_snapshot_received = true;
-                            info!("✅ Kalshi Snapshot received and applied");
-                        },
-                        Ok(KalshiSocketMessage::OrderbookDelta(orderbook_delta)) => {
-                            // Only apply deltas if we have seen the snapshot (though usually snapshot comes first)
-                            if kalshi_snapshot_received {
-                                market.apply_kalshi_delta(orderbook_delta);
-                            }
-                        },
-                        Ok(KalshiSocketMessage::UserFill(fill)) => handler.handle_fill(FillEvent::Kalshi(fill.msg)),
-                        Ok(value) => {
-                            info!("Kalshi WS Message: {:?}", value);
-                        }, 
-                        Err(e) => { error!("Kalshi WS Error: {:?}", e); break; }
+            // --- Polymarket WebSocket Events ---
+            Some(msg_result) = pm_stream.next() => {
+                match msg_result {
+                    Ok(PolymarketFeedUpdate::BestBidAsk(bba)) => {
+                        if let Err(e) = event_tx.send(OrderbookChangeEvent::Polymarket(bba)).await {
+                            // If channel is closed, it means processor died or we are shutting down
+                            error!("Channel closed: {:?}", e);
+                            break;
+                        }
                     }
+                    Ok(PolymarketFeedUpdate::Trade(_trade)) => {}
+                    Err(e) => warn!("Polymarket WS Stream Error: {:?}", e),
                 }
-        }
-
-        if let Some(opp) = market.find_opportunity(edge_decimal) {
-            if last_action.elapsed() < cooldown {
-                continue;
             }
-            
-            info!("⚡ Opportunity: {}", opp.description);
-            
-            // Execute Entry
-            if let Some(pos) =
-            execute_entry(&opp, &poly_fast_yes, &poly_fast_no, &pm_clob, &kalshi).await
-            {
-                handler.set_position(pos);
-            } else {
-                error!("Failed to execute entry");
-            }
-            
-            last_action = std::time::Instant::now();
-        }
 
+            // --- Kalshi WebSocket Events ---
+            msg = kalshi.ws_client.next_message() => {
+                match msg {
+                    Ok(KalshiSocketMessage::OrderbookDelta(delta)) => {
+                        if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiDelta(delta.msg)).await {
+                             error!("Channel closed: {:?}", e);
+                             break;
+                        }
+                    }
+                    Ok(KalshiSocketMessage::OrderbookSnapshot(snapshot)) => {
+                        info!("📸 Received Kalshi Snapshot");
+                        if let Err(e) = event_tx.send(OrderbookChangeEvent::KalshiSnapshot(snapshot.msg)).await {
+                             error!("Channel closed: {:?}", e);
+                             break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Kalshi WS Error: {:?}", e);
+                        // Optional: Break to trigger restart or continue
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     Ok(())
-}
-
-// ... (execute_entry helper function remains unchanged) ...
-async fn execute_entry(
-    opp: &Opportunity,
-    poly_yes: &PolyFastExecution,
-    poly_no: &PolyFastExecution,
-    pm_clob: &PolymarketClobService,
-    kalshi: &KalshiService,
-) -> Option<PairedPosition> { 
-    let poly_cents = (opp.poly_price * Decimal::from(100)).ceil().to_u32().unwrap_or(100);
-    let sizing = ArbSizing::calculate(Decimal::from(10), poly_cents, opp.kalshi_price_cents)?;
-    let quantity_dec = Decimal::from(sizing.quantity);
-
-    // 2. Prepare Poly
-    let exec = if opp.poly_token_id == poly_yes.token_id { poly_yes } else { poly_no };
-    
-    
-    let inc = Decimal::from_str("0.01").unwrap();
-    // For BUY: makerAmount = USDC, takerAmount = Outcome Tokens.
-    // We send 'quantity_dec' as size.
-    let order = exec.build_fok_order(opp.poly_price + inc, quantity_dec, Side::Buy).ok()?;
-
-    // 3. Prepare Kalshi
-    let k_order = Order::new(opp.kalshi_price_cents, sizing.quantity);
-
-    info!("🚀 Executing Entry...");
-
-    // 4. Fire
-    let (p_res, k_res) = tokio::join!(
-        exec.execute_order(pm_clob, order),
-        kalshi.place_fok_order(
-            opp.kalshi_ticker.clone(),
-            opp.kalshi_side.clone(),
-            "buy".to_string(),
-            k_order
-        )
-    );
-
-    match (p_res, k_res) {
-        (Ok(poly_resp), Ok(_)) => {
-            info!("✅ Entry Successful on both markets");
-            
-            // --- CRITICAL FIX: Use actual filled amount from Poly response ---
-            // For a Buy order, taking_amount is the Outcome Tokens we received.
-            let poly_filled_qty = poly_resp.taking_amount;
-            
-            info!("📝 Poly Filled Qty: {} (Requested: {})", poly_filled_qty, quantity_dec);
-
-            let order_id = poly_resp.order_id.clone();
-            let order = match pm_clob.get_order(&order_id).await {
-                Ok(order) => order,
-                Err(err) => {
-                    error!("Failed to get order: {}", err);
-                    return None
-                }
-            };
-            
-            info!("Open order response: {:?}", order);
-            let size = order.size_matched;
-            
-            let size = size * Decimal::from_str("0.982").unwrap();
-            
-            info!("Poly response: {:?}", poly_resp);
-            let poly_pos = Position {
-                exchange: service::market::Exchange::Polymarket,
-                id: opp.poly_token_id.to_string(), // Store ID as string
-                side: "buy".to_string(), // We bought, so we hold it (to sell later)
-                quantity: size, // Exact amount from response
-                price: opp.poly_price,
-                timestamp: std::time::Instant::now(),
-            };
-
-            let kalshi_pos = Position {
-                exchange: service::market::Exchange::Kalshi,
-                id: opp.kalshi_ticker.clone(),
-                side: opp.kalshi_side.clone(),
-                quantity: quantity_dec, // Kalshi currently assumed exact
-                price: Decimal::from(opp.kalshi_price_cents) / Decimal::from(100),
-                timestamp: std::time::Instant::now(),
-            };
-
-            Some(PairedPosition::new(poly_pos, kalshi_pos))
-        }
-        (Err(e), _) => { error!("❌ Poly Entry Failed: {:?}", e); None },
-        (_, Err(e)) => { error!("❌ Kalshi Entry Failed: {:?}", e); None },
-    }
 }

@@ -1,8 +1,8 @@
-
 use lib::AppResult;
 use service::telemetry;
 mod cli;
 mod monitor;
+mod guard;
 
 #[tokio::main]
 async fn main() -> AppResult<()> {

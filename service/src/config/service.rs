@@ -1,7 +1,7 @@
+use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::{env, fs::read_to_string, ops::Deref, path::Path, sync::Arc};
-use anyhow::{bail, Context, Result};
 
 use crate::services::{ServiceFactory, ServiceProvider};
 
@@ -29,7 +29,7 @@ pub struct PolymarketConfig {
 #[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct KalshiConfig {
     pub api_key_id: String,
-    pub private_key_pem: String
+    pub private_key_pem: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,9 +47,9 @@ impl Deref for ConfigService {
 impl ConfigService {
     #[builder]
     pub fn new(
-        chain: Option<ChainConfig>, 
-        polymarket: Option<PolymarketConfig>, 
-        kalshi: Option<KalshiConfig>
+        chain: Option<ChainConfig>,
+        polymarket: Option<PolymarketConfig>,
+        kalshi: Option<KalshiConfig>,
     ) -> Result<Self> {
         let inner = ConfigServiceInner {
             chain: chain.unwrap_or_default(),
@@ -70,14 +70,14 @@ impl ConfigService {
             .parse::<u64>()
             .context("CHAIN_ID must be a u64")?;
 
-        let private_key = env::var("PRIVATE_KEY")
-            .context("PRIVATE_KEY environment variable not set")?;
-        
+        let private_key =
+            env::var("PRIVATE_KEY").context("PRIVATE_KEY environment variable not set")?;
+
         let chain = ChainConfig {
             chain_id,
             private_key,
         };
-        
+
         let api_key = env::var("POLYMARKET_API_KEY")
             .context("POLYMARKET_API_KEY environment variable not set")?;
 
@@ -94,21 +94,21 @@ impl ConfigService {
             api_passphrase,
             funder,
         };
-        
-        let kalshi_api_key = env::var("KALSHI_API_KEY_ID")
-            .context("KALSHI_API_KEY environment variable not set")?;
-        
+
+        let kalshi_api_key =
+            env::var("KALSHI_API_KEY_ID").context("KALSHI_API_KEY environment variable not set")?;
+
         let kalshi_pem_file_path_var = env::var("KALSHI_PRIVATE_KEY_PEM")
             .context("KALSHI_PRIVATE_KEY_PEM environment variable not set")?;
-        
+
         let private_key_pem_path = Path::new(&kalshi_pem_file_path_var);
-        
-        let private_key_pem = read_to_string(private_key_pem_path)
-            .context("Failed to open private key PEM file")?;
-        
+
+        let private_key_pem =
+            read_to_string(private_key_pem_path).context("Failed to open private key PEM file")?;
+
         let kalshi = KalshiConfig {
             api_key_id: kalshi_api_key,
-            private_key_pem
+            private_key_pem,
         };
 
         // --- Kalshi Configuration ---

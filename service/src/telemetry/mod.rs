@@ -1,5 +1,5 @@
 use anyhow::Context;
-use lib::{AppResult};
+use lib::AppResult;
 use tracing::{Level, level_filters::LevelFilter, subscriber::set_global_default};
 use tracing_subscriber::{filter::Targets, fmt::writer::MakeWriterExt, layer::SubscriberExt};
 

@@ -54,3 +54,4 @@ regex = { workspace = true }
 polymarket-client-sdk = { workspace = true }
 chrono-tz = "0.8"
 rust_decimal_macros = "1.40.0"
+clap = { workspace = true }

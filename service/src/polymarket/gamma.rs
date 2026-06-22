@@ -1,49 +1,72 @@
 use async_trait::async_trait;
-use hmac::digest::consts::U256;
-use lib::AppResult;
-use polymarket_client_sdk::gamma::{types::{request::{EventByIdRequest, EventByIdRequestBuilder, EventsRequest, MarketByIdRequest, MarketBySlugRequest}, response::Market}, Client};
 use chrono::{Datelike, Timelike};
 use chrono_tz::America::New_York;
+use lib::AppResult;
+use polymarket_client_sdk::gamma::{
+    Client,
+    types::{request::MarketBySlugRequest, response::Market},
+};
 
-use crate::{market::{Hour1Symbols, Min15Symbols}, services::{ServiceFactory, ServiceProvider}};
+use crate::{
+    market::symbols::{Hour1Symbols, Min15Symbols},
+    services::{ServiceFactory, ServiceProvider},
+    utils::get_floored_15min_timestamp,
+};
 
 pub struct PolymarketGammaService {
-    client: Client
+    client: Client,
+}
+
+impl Default for PolymarketGammaService {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PolymarketGammaService {
     pub fn new() -> Self {
         let client = Client::default();
-        
+
         Self { client }
     }
-    
-    fn get_floored_15min_timestamp(timestamp: i64) -> i64 {
-        const WINDOW_SECONDS: i64 = 15 * 60; // 900 seconds
-        (timestamp / WINDOW_SECONDS) * WINDOW_SECONDS
-    }
-    
-    pub async fn get_current_15min_market_by_symbol(&self, symbol: Min15Symbols) -> AppResult<Market> {
+
+    pub fn get_slug_by_symbol(&self, symbol: Min15Symbols) -> String {
         let now = chrono::Utc::now();
         let current_ts = now.timestamp();
-        let floored_ts = Self::get_floored_15min_timestamp(current_ts);
-        let market_slug = format!("{}-updown-15m-{}", symbol.to_string().to_lowercase(), floored_ts);
-        
-        let market = self.client.market_by_slug(&MarketBySlugRequest::builder().slug(market_slug).build()).await?;
-        
+        let floored_ts = get_floored_15min_timestamp(current_ts);
+        let value = format! {"{:?}", symbol};
+        let market_slug = format!("{}-updown-15m-{}", value.to_lowercase(), floored_ts);
+
+        market_slug
+    }
+
+    pub async fn get_current_15min_market_by_symbol(
+        &self,
+        symbol: Min15Symbols,
+    ) -> AppResult<Market> {
+        let market_slug = self.get_slug_by_symbol(symbol);
+
+        let market = self
+            .client
+            .market_by_slug(&MarketBySlugRequest::builder().slug(market_slug).build())
+            .await?;
+
         Ok(market)
     }
 
     pub async fn get_current_1h_market_by_symbol(&self, symbol: Hour1Symbols) -> AppResult<Market> {
         // Format: bitcoin-up-or-down-january-20-4pm-et
-        
+
         let now = chrono::Utc::now().with_timezone(&New_York);
-        
+
         // Target next full hour
         let target_time = now
-            .with_minute(0).unwrap()
-            .with_second(0).unwrap()
-            .with_nanosecond(0).unwrap()
+            .with_minute(0)
+            .unwrap()
+            .with_second(0)
+            .unwrap()
+            .with_nanosecond(0)
+            .unwrap()
             .checked_add_signed(chrono::Duration::hours(1))
             .ok_or_else(|| anyhow::anyhow!("Time calculation overflow"))?;
 
@@ -58,14 +81,22 @@ impl PolymarketGammaService {
         let hour_12 = target_time.format("%l").to_string().trim().to_string(); // %l is space padded
         let am_pm = target_time.format("%P").to_string();
 
-        let market_slug = format!("{}-up-or-down-{}-{}-{}{}-et", asset_str, month, day, hour_12, am_pm);
+        let market_slug = format!(
+            "{}-up-or-down-{}-{}-{}{}-et",
+            asset_str, month, day, hour_12, am_pm
+        );
 
-        let market = self.client.market_by_slug(&MarketBySlugRequest::builder().slug(market_slug).build()).await?;
-        
+        self.get_market_by_slug(&market_slug).await
+    }
+
+    pub async fn get_market_by_slug(&self, slug: &str) -> AppResult<Market> {
+        let market = self
+            .client
+            .market_by_slug(&MarketBySlugRequest::builder().slug(slug).build())
+            .await?;
+
         Ok(market)
     }
-    
-    
 }
 
 #[async_trait]
