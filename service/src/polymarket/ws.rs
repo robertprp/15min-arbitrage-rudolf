@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use futures::{Stream, StreamExt, TryStreamExt};
 use lib::AppResult;
 use polymarket_client_sdk::{
-    auth::{state::Authenticated, Credentials, Normal},
+    auth::{Credentials, Normal, state::Authenticated},
     clob::ws::{BestBidAsk, BookUpdate, Client, TradeMessage},
     types::{Address, B256, U256},
 };

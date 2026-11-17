@@ -198,7 +198,7 @@ async fn monitor_single_window(
     .await?;
 
     // 7. Spawn Tasks and Track Handles
-    
+
     // Spawn Oracle
     let oracle_handle = tokio::spawn(async move {
         oracle.run().await;
